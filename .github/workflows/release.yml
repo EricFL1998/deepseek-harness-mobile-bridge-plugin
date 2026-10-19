@@ -122,6 +122,34 @@ jobs:
               `runtimeVersion` as `-bridge${{ steps.gate.outputs.version }}`.
           fail_on_unmatched_files: false
 
+      - name: Rebuild the rootfs image so new installs bundle this version
+        if: steps.gate.outputs.release == 'true'
+        env:
+          # A token with `contents: write` on the rootfs repository, because a
+          # repository_dispatch into another repository cannot use this one's
+          # GITHUB_TOKEN. Set ROOTFS_DISPATCH_TOKEN to enable the rebuild; without
+          # it the release still publishes and existing devices still get the
+          # plugin through the in-app update.
+          DISPATCH_TOKEN: ${{ secrets.ROOTFS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            echo "::warning::ROOTFS_DISPATCH_TOKEN is not set; skipping the rootfs rebuild."
+            echo "The plugin release is published. New rootfs images will pick it up"
+            echo "on the next DSH release or manual rootfs build."
+            exit 0
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "User-Agent: dsh-mobile-bridge-plugin" \
+            "https://api.github.com/repos/EricFL1998/deepseek-harness-mobile-rootfs/dispatches" \
+            -d "{\"event_type\":\"bridge-release\",\"client_payload\":{\"version\":\"${{ steps.gate.outputs.version }}\"}}")
+          if [ "$STATUS" != "204" ]; then
+            echo "::error::Failed to dispatch the rootfs rebuild (HTTP $STATUS)."
+            exit 1
+          fi
+          echo "Dispatched a rootfs rebuild for bridge ${{ steps.gate.outputs.version }}."
+
       - name: Clear the release flag
         if: steps.gate.outputs.release == 'true'
         run: |
