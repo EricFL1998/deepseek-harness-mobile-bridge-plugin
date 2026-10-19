@@ -185,13 +185,14 @@ node --experimental-strip-types bin/serve.ts
 ```sh
 pnpm install
 pnpm run typecheck
-pnpm test        # 61 tests: wire contract, providers, VM isolation, assembly, fixture, e2e
+pnpm test        # 64 tests: wire contract, providers, VM isolation, assembly, fixture, e2e, Cordis
 pnpm run build   # emits lib/
 ```
 
 Tests exercise the handler directly rather than over a socket, so the wire
 contract is checked without a carrier; the standalone carrier has its own
-socket-level test.
+socket-level test, and a real Cordis composition loads the plugin as a fiber to
+prove the export form, inject list, and effect disposal are all correct.
 
 ## Known limitations
 
