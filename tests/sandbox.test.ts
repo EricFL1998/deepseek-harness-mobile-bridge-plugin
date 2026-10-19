@@ -13,6 +13,7 @@ import { createBridgeHandler } from '../src/handler.ts'
 import { ProviderRegistry } from '../src/protocol/provider.ts'
 import { MANIFEST_PATH, QUERY_PATH } from '../src/protocol/types.ts'
 import { startStandalone } from '../src/standalone.ts'
+import { extractStaticRegistrations, toSlotRegistration } from '../src/slots/static-slots.ts'
 import { evaluateBundleSource, BundleEvaluationError } from '../src/slots/evaluate.ts'
 import { createReactStub } from '../src/slots/react-stub.ts'
 
@@ -179,4 +180,27 @@ test('the standalone carrier refuses a non-loopback bind', async () => {
     }),
     /loopback only/,
   )
+})
+
+test('static extraction reads registrations without running the bundle', () => {
+  const source = `
+    var A = class {
+      apply(t) {
+        t.slots.register({ name: "plugins.item", id: "agent-loop", order: 30 }, X)
+        t.slots.register({ name: "settings.section", key: "general", order: 10, locale: "ns" }, Y)
+        t.slots.register({ name: "not a slot" }, Z)
+      }
+    };
+  `
+  const found = extractStaticRegistrations(source)
+  assert.deepEqual(found, [
+    { slot: 'plugins.item', id: 'agent-loop', order: 30 },
+    { slot: 'settings.section', key: 'general', order: 10, locale: 'ns' },
+  ])
+})
+
+test('a static registration lands in the native placement its slot names', () => {
+  const projected = toSlotRegistration('@deepseek-ai/dsh-client-x', { slot: 'sidebar.panellist', id: 'p' })
+  assert.equal(projected.placement, 'drawer')
+  assert.equal(projected.package, '@deepseek-ai/dsh-client-x')
 })
