@@ -1,0 +1,83 @@
+# Publish a release that acts as the version marker for this plugin.
+#
+# The plugin is installed from a source tarball, so a release carries no assets:
+# the tag IS the artifact. Two consumers read it and nothing else:
+#
+#   - the Android client, to decide whether the settings page should offer an
+#     "update plugin" action (it compares the tag against the version installed
+#     inside the rootfs);
+#   - the rootfs build, to decide which plugin version to bundle and stamp into
+#     its `runtimeVersion` as `-bridge<version>`.
+#
+# So a release is created whenever `package.json`'s version moves, and the tag is
+# always `v<version>` — the one shape both consumers parse.
+
+name: Publish version marker
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - package.json
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read package version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Error: package.json version '$VERSION' is not a plain semver triple."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip when the tag already exists
+        id: existing
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "User-Agent: dsh-mobile-bridge-plugin" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.version.outputs.tag }}")
+          if [ "$STATUS" = "200" ]; then
+            echo "Release ${{ steps.version.outputs.tag }} already exists; nothing to do."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create the version-marker release
+        if: steps.existing.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "dsh-mobile-bridge-plugin ${{ steps.version.outputs.version }}"
+          body: |
+            Plugin version marker **${{ steps.version.outputs.version }}**.
+
+            This release carries no assets. The plugin is installed from the
+            repository source tarball, so the tag is the whole artifact:
+
+            ```sh
+            dsh plugin --profile web add \
+              https://github.com/${{ github.repository }}#v${{ steps.version.outputs.version }}
+            ```
+
+            Consumers that read this tag:
+
+            - **Android client** — compares it against the plugin version inside
+              the installed rootfs and offers the update in Settings → Updates
+              only. It is an optional update: an older plugin keeps working.
+            - **rootfs build** — bundles this version and stamps it into
+              `runtimeVersion` as `-bridge${{ steps.version.outputs.version }}`.
+          fail_on_unmatched_files: false

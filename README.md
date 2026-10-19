@@ -178,6 +178,25 @@ APK ships a small manifest naming this repository and the plugin version it
 expects, and the update button runs the command inside the rootfs. So a bridge
 release reaches existing users without re-downloading a rootfs image.
 
+### Releases are version markers
+
+A GitHub release here carries **no assets**: the plugin is installed from the
+source tarball, so the tag is the whole artifact. `.github/workflows/release.yml`
+creates `v<version>` whenever `package.json`'s version moves.
+
+Two consumers read that tag and nothing else:
+
+- **The Android client** compares it against the plugin version installed inside
+  the rootfs. A difference is an *optional* update, offered in Settings →
+  Updates and nowhere else: the older plugin keeps working, so opening the app
+  never nags.
+- **The rootfs build** bundles that version and stamps it into its
+  `runtimeVersion` as `-bridge<version>`, e.g.
+  `1.1.0-dsh0.2.1-rc.2-bridge1.1.0`.
+
+So a plugin release needs no APK rebuild and no rootfs rebuild. The rootfs picks
+the new version up the next time it is rebuilt for a DSH upgrade.
+
 Configuration is per deployment; see `Config` in `src/index.ts` and the defaults
 in `cordis.patch.yml`. The two worth reading before shipping a client:
 
