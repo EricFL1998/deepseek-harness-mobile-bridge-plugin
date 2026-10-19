@@ -45,18 +45,45 @@ export interface SlotInventoryFace {
   list(): Promise<{ readonly entries: readonly SlotInventoryEntry[] }>
 }
 
+/** One bundle row, as `pluginManager.listBundles()` reports it. */
+export interface SlotBundleRow {
+  readonly rowId: string
+  readonly moduleName: string
+  readonly meta?: unknown
+}
+
+/** One bundle, reduced to the rows its patch declares. */
+export interface SlotBundleInfo {
+  readonly name: string
+  readonly rows?: readonly SlotBundleRow[]
+}
+
+/** The slice of `pluginManager` this provider reads. */
+export interface SlotBundleFace {
+  listBundles(): Promise<readonly SlotBundleInfo[]>
+}
+
 /** `host-slots` configuration. */
 export interface HostSlotsOptions {
   /** Resolve the settings service, or undefined when this composition has none. */
   readonly settings: () => SettingsFace | undefined
   /** Resolve the plugin inventory, or undefined when absent. */
   readonly pluginInventory: () => SlotInventoryFace | undefined
+  /** Resolve the bundle manager, or undefined when this composition has none. */
+  readonly pluginManager?: () => SlotBundleFace | undefined
   /** Locale tags used to resolve locale-mapped titles. */
   readonly localeTags?: readonly string[]
 }
 
-/** Where the native app puts a contribution. */
+/**
+ * Where the native app puts a contribution.
+ *
+ * The two placements differ by whether the namespace belongs to one bundle row: a
+ * row's own configuration belongs on that row inside the Plugins page, while a
+ * namespace without a row is a standalone Settings page.
+ */
 const SETTINGS_SURFACE = 'settings.page'
+const ROW_CONFIG_SURFACE = 'plugins.row.config'
 
 /**
  * Build the `host-slots` provider.
@@ -80,17 +107,23 @@ export function createHostSlotsProvider(options: HostSlotsOptions): Provider {
         }
         const descriptors = settings.describe({ redactSecrets: true })
         const metaOf = await rowMetaById(options.pluginInventory?.(), localeTags)
+        const rowOwners = await rowOwnersByName(options.pluginManager?.(), localeTags)
         const surfaces: SlotSurface[] = []
         for (const descriptor of descriptors) {
           const meta = metaOf.get(descriptor.ns)
-          // The namespace always exists; the title may not. Falling back to the
-          // namespace keeps the entry usable instead of dropping a real page.
+          const owner = rowOwners.get(descriptor.ns)
+          // An unknown namespace still becomes a surface: dropping it would hide a
+          // page the Host really serves. Only the placement needs the owner.
           surfaces.push({
-            slot: SETTINGS_SURFACE,
-            id: descriptor.ns,
-            title: meta?.title ?? descriptor.ns,
-            ...(meta?.description === undefined ? {} : { description: meta.description }),
-            ...(meta?.moduleName === undefined ? {} : { module: meta.moduleName }),
+            slot: owner === undefined ? SETTINGS_SURFACE : ROW_CONFIG_SURFACE,
+            id: owner === undefined ? descriptor.ns : `${owner.bundle}#${descriptor.ns}`,
+            title: meta?.title ?? owner?.title ?? descriptor.ns,
+            ...(owner?.description ?? meta?.description) === undefined
+              ? {}
+              : { description: owner?.description ?? meta?.description },
+            ...(meta?.moduleName ?? owner?.moduleName) === undefined
+              ? {}
+              : { module: meta?.moduleName ?? owner?.moduleName },
           })
         }
         return { surfaces }
@@ -113,6 +146,35 @@ async function rowMetaById(
       description: localizedString(entry.meta, ['description'], localeTags),
       moduleName: entry.moduleName,
     })
+  }
+  return out
+}
+
+/**
+ * Which bundle owns each row id, so a namespace can be placed on that row.
+ *
+ * Row ids are only unique inside their bundle patch; when two bundles declare the
+ * same id the first wins, which keeps the mapping deterministic instead of guessing.
+ * @param manager the bundle manager, when the composition has one.
+ * @param localeTags locale preference for the row's own meta text.
+ * @returns owner information keyed by row id.
+ */
+async function rowOwnersByName(
+  manager: SlotBundleFace | undefined,
+  localeTags: readonly string[],
+): Promise<Map<string, { bundle: string; title?: string; description?: string; moduleName?: string }>> {
+  const out = new Map<string, { bundle: string; title?: string; description?: string; moduleName?: string }>()
+  if (manager === undefined) return out
+  for (const bundle of await manager.listBundles()) {
+    for (const row of bundle.rows ?? []) {
+      if (out.has(row.rowId)) continue
+      out.set(row.rowId, {
+        bundle: bundle.name,
+        title: localizedString(row.meta, ['title'], localeTags),
+        description: localizedString(row.meta, ['description'], localeTags),
+        moduleName: row.moduleName,
+      })
+    }
   }
   return out
 }

@@ -31,7 +31,7 @@ import {
 import {
   createPackageInventoryProvider, type PluginInventoryFace, type PluginManagerFace,
 } from './providers/package-inventory.ts'
-import { createHostSlotsProvider, type SlotInventoryFace, type SettingsFace } from './providers/host-slots.ts'
+import { createHostSlotsProvider, type SlotBundleFace, type SlotInventoryFace, type SettingsFace } from './providers/host-slots.ts'
 import { createRpcProvider, type GatewayFace, type RpcAllowEntry } from './providers/rpc.ts'
 import { DEFAULT_RENDER_BUDGET } from './slots/render-tree.ts'
 
@@ -59,6 +59,8 @@ export interface Config {
    * wants and the bridge reports what the installed bundles register.
    */
   readonly slotEntries: string[]
+  /** Whether to evaluate the client halves on disk when the Host composes no graph. */
+  readonly clientBundleScan: boolean
   /** Bytes one `client-assets/module-source` call may return. */
   readonly maxModuleBytes: number
   /** Largest `size` an `client-slots/icon-svg` call may request. */
@@ -90,6 +92,14 @@ export interface Config {
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
   slotEntries: z.array(z.string()).default([]),
+  /**
+   * Evaluate the client halves found on disk when the Host composes no boot graph.
+   *
+   * Off by default: on a phone Host, evaluating a batch of client bundles exhausts the
+   * heap and takes the Host down with it. Deciding otherwise needs a lazy, incremental
+   * scan; until then the option exists for desktop Hosts, where it is safe.
+   */
+  clientBundleScan: z.boolean().default(false),
   maxModuleBytes: z.natural().min(1024).max(16 * 1024 * 1024).default(512 * 1024),
   maxIconSize: z.natural().min(8).max(1024).default(256),
   iconViewBox: z.string().default('0 0 24 24'),
@@ -147,12 +157,34 @@ function admissionOf(ctx: Context, request: IncomingMessage): number | undefined
  * @returns the directory, or undefined when the installation cannot be located.
  */
 function installModulesPath(): string | undefined {
+  return installModulesPaths()[0]
+}
+
+/**
+ * Candidate `node_modules` directories of the running Host installation.
+ *
+ * The bridge itself lives in the profile, so resolving `@deepseek-ai/dsh` from here
+ * fails on a Host that installed DSH globally — which is exactly how the shipped
+ * rootfs is laid out. The running entry point still names the installation, so that
+ * is tried as well; both answers are returned so a caller can scan whichever exist.
+ * @returns absolute directories, most authoritative first.
+ */
+function installModulesPaths(): string[] {
+  const roots: string[] = []
   try {
     const require = createRequire(import.meta.url)
-    return join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'node_modules')
+    roots.push(join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'node_modules'))
   } catch {
-    return undefined
+    // The profile does not depend on the Host; the entry point below answers instead.
   }
+  // `<prefix>/lib/node_modules/@deepseek-ai/dsh/lib/bin.js` -> `<prefix>/lib/node_modules/@deepseek-ai/dsh/node_modules`
+  const entry = process.argv[1]
+  const marker = '/@deepseek-ai/dsh/'
+  if (entry !== undefined) {
+    const at = entry.lastIndexOf(marker)
+    if (at >= 0) roots.push(join(entry.slice(0, at), '@deepseek-ai', 'dsh', 'node_modules'))
+  }
+  return roots
 }
 
 /**
@@ -178,6 +210,13 @@ function assembleProviders(
     clientModules,
   }))
 
+  // A Host that serves a prebuilt web client only exposes slot declarations through
+  // the client halves on disk; saying so is better than silently serving nothing.
+  const roots = installModulesPaths()
+  if (roots.length === 0) {
+    warnings.push('client bundles: the Host installation could not be located on disk')
+  }
+
   registry.add(createClientSlotsProvider({
     clientModules,
     entryIds: config.slotEntries,
@@ -189,12 +228,16 @@ function assembleProviders(
     maxIconSize: config.maxIconSize,
     iconViewBox: config.iconViewBox,
     installModules: () => installModulesPath(),
+    // A prebuilt web client composes no boot graph, so the client halves on disk are
+    // the only place its real slot declarations can be read from.
+    clientRoots: () => (config.clientBundleScan ? roots : []),
     localeTags: config.localeTags,
   }))
 
   registry.add(createHostSlotsProvider({
     settings: () => ctx.get('settings') as SettingsFace | undefined,
     pluginInventory: () => ctx.get('pluginInventory') as SlotInventoryFace | undefined,
+    pluginManager: () => ctx.get('pluginManager') as SlotBundleFace | undefined,
     localeTags: config.localeTags,
   }))
 

@@ -110,17 +110,17 @@ test('a bundle that exports no apply is reported', () => {
   )
 })
 
-test('requesting a module the VM does not carry names it in the failure', () => {
-  assert.throws(
-    () => evaluateBundleSource('probe', `
+test('an uncarried module is stubbed and recorded instead of failing the bundle', () => {
+  // Throwing on the import would discard the bundle's slot declarations along with
+  // it, so the request is answered with a stub and named in `missingExternals`.
+  const evaluated = evaluateBundleSource('probe', `
 window.__ModuleLoader__.load({ id: "probe", factory: (require) => {
-  require("@deepseek-ai/dsh-client-ui-primitives");
-  return { name: "probe", apply: () => {} };
+  const primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+  return { name: "probe", apply: () => { primitives.anything() } };
 } });
-`),
-    (error: unknown) => error instanceof BundleEvaluationError
-      && error.message.includes('@deepseek-ai/dsh-client-ui-primitives'),
-  )
+`)
+  assert.equal(evaluated.entryId, 'probe')
+  assert.ok(evaluated.missingExternals.includes('@deepseek-ai/dsh-client-ui-primitives'))
 })
 
 test('the React stub resolves hooks once and numbers ids deterministically', () => {
