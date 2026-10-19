@@ -18,6 +18,7 @@ import type { IconSvgData, RenderTreeData, SlotListData, SlotRegistration } from
 import { projectJson } from '../protocol/json.ts'
 import { evaluateBundleFile, type CapturedComponent, type EvaluatedBundle } from '../slots/evaluate.ts'
 import { DEFAULT_RENDER_BUDGET, renderComponent, treeToSvg, type RenderBudget } from '../slots/render-tree.ts'
+import { placementOf } from '../slot-placements.ts'
 import type { ClientModulesFace } from './client-assets.ts'
 import {
   OFFICIAL_ARTWORK, OFFICIAL_PLUGIN_ITEMS, readOfficialItemText,
@@ -191,6 +192,8 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
               ...(registration.label === undefined ? {} : { label: registration.label }),
               ...(registration.priority === undefined ? {} : { priority: registration.priority }),
               package: entry.bundle.entryId,
+              // 原生落点由 bridge 判定：客户端不再各自维护一张 slot→屏幕的对照表。
+              placement: placementOf(registration.slot).placement,
               ...(registration.locale === undefined ? {} : { locale: registration.locale }),
               render: { kind: registration.kind, componentId: registration.componentId },
             })

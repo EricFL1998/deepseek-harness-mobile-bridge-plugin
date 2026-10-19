@@ -257,6 +257,7 @@ test('client-slots/list captures registrations, labels, order, and package', asy
       order: 5,
       label: 'Sample Two',
       package: 'sample-plugin',
+      placement: 'plugins.item',
       render: { kind: 'component', componentId: 'sample-two' },
     },
     {
@@ -265,6 +266,7 @@ test('client-slots/list captures registrations, labels, order, and package', asy
       order: 10,
       label: 'Sample One',
       package: 'sample-plugin',
+      placement: 'plugins.item',
       locale: 'sample',
       render: { kind: 'component', componentId: 'sample-one' },
     },
@@ -272,6 +274,8 @@ test('client-slots/list captures registrations, labels, order, and package', asy
       slot: 'sample.factory',
       id: 'sample-factory',
       package: 'sample-plugin',
+      // An unmapped slot stays visible under `other` instead of being dropped.
+      placement: 'other',
       render: { kind: 'factory', componentId: 'sample-factory' },
     },
   ])
