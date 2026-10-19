@@ -5,18 +5,18 @@
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./protocol": {
-      "types": "./lib/types/protocol/index.d.ts",
-      "default": "./lib/protocol/index.js"
+      "types": "./lib/protocol/types.d.ts",
+      "default": "./lib/protocol/types.js"
     },
     "./standalone": {
-      "types": "./lib/types/standalone.d.ts",
+      "types": "./lib/standalone.d.ts",
       "default": "./lib/standalone.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
