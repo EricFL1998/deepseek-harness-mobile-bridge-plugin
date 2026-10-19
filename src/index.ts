@@ -32,7 +32,7 @@ import { createRpcProvider, type GatewayFace, type RpcAllowEntry } from './provi
 import { DEFAULT_RENDER_BUDGET } from './slots/render-tree.ts'
 
 /** Cordis function-plugin name. */
-export const name = 'dsh-mobile-bridge'
+export const name = 'dsh-mobile-bridge-plugin'
 
 /** The routes need the Host's HTTP carrier; every other service is optional. */
 export const inject = ['webServer']
@@ -214,6 +214,7 @@ export function apply(ctx: Context, config: Config): void {
   const { registry, warnings } = assembleProviders(ctx, config)
   const handler = createBridgeHandler({
     registry,
+    pluginVersion: packageVersion,
     dshVersion: hostVersion,
     assemblyWarnings: warnings,
     ...(config.requireHostSession

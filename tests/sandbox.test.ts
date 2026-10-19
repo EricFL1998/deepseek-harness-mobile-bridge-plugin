@@ -140,7 +140,7 @@ test('the React stub resolves hooks once and numbers ids deterministically', () 
 test('the standalone carrier serves the same handler over a socket', async () => {
   const registry = new ProviderRegistry()
   registry.add({ id: 'demo', version: 3, readOnly: true, ops: { ping: () => 'pong' } })
-  const handler = createBridgeHandler({ registry, dshVersion: () => '1.2.3', assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry, pluginVersion: () => '1.1.0', dshVersion: () => '1.2.3', assemblyWarnings: [] })
   const server = await startStandalone({ handler })
   try {
     const manifest = await fetch(`${server.origin}${MANIFEST_PATH}`)
@@ -172,7 +172,7 @@ test('the standalone carrier refuses a non-loopback bind', async () => {
     async () => startStandalone({
       handler: createBridgeHandler({
         registry: new ProviderRegistry(),
-        dshVersion: () => null,
+        pluginVersion: () => '1.1.0', dshVersion: () => null,
         assemblyWarnings: [],
       }),
       host: '0.0.0.0',

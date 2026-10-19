@@ -56,7 +56,7 @@ test('a phone client can negotiate and read the plugin catalog end to end', asyn
   }))
 
   const server = await startStandalone({
-    handler: createBridgeHandler({ registry, dshVersion: () => '0.2.1-rc.2', assemblyWarnings: [] }),
+    handler: createBridgeHandler({ registry, pluginVersion: () => '1.1.0', dshVersion: () => '0.2.1-rc.2', assemblyWarnings: [] }),
   })
   cleanup.push(() => server.close())
 

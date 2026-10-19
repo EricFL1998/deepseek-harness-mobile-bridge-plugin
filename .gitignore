@@ -1,7 +1,10 @@
 node_modules/
-lib/
 *.log
 .DS_Store
 .env
 .env.*
 !.env.example
+
+# `lib/` is committed on purpose: this package is not published to npm, so a
+# GitHub tarball IS the release artifact. A tarball install runs no build step,
+# so the built output has to be in the tree or the installed plugin has no entry.

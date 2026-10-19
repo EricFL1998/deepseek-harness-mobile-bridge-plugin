@@ -21,6 +21,8 @@ const MAX_REQUEST_BYTES = 256 * 1024
 export interface BridgeHandlerOptions {
   /** The provider table. */
   readonly registry: ProviderRegistry
+  /** The bridge plugin package's own version. */
+  readonly pluginVersion: () => string
   /** The Host release label, or null when the Host publishes none. */
   readonly dshVersion: () => string | null
   /** Notes collected at assembly time, reported on every manifest. */
@@ -57,6 +59,7 @@ export function createBridgeHandler(options: BridgeHandlerOptions): (request: In
     }))
     return {
       bridgeVersion: BRIDGE_VERSION,
+      pluginVersion: options.pluginVersion(),
       dshVersion: options.dshVersion(),
       providers,
       ...(options.assemblyWarnings.length === 0 ? {} : { warnings: [...options.assemblyWarnings] }),

@@ -11,6 +11,7 @@
  */
 
 import { createBridgeHandler } from '../src/handler.ts'
+import { packageVersion } from '../src/index.ts'
 import { ProviderRegistry } from '../src/protocol/provider.ts'
 import { startStandalone } from '../src/standalone.ts'
 
@@ -19,6 +20,7 @@ const port = Number(process.env.DSH_BRIDGE_PORT ?? 0)
 const server = await startStandalone({
   handler: createBridgeHandler({
     registry: new ProviderRegistry(),
+    pluginVersion: packageVersion,
     dshVersion: () => null,
     assemblyWarnings: [
       'standalone carrier: no Host services are bound, so every provider is absent',

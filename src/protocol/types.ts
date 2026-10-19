@@ -35,6 +35,13 @@ export interface ProviderManifestEntry {
 /** `GET /manifest` response body. */
 export interface ManifestResponse {
   readonly bridgeVersion: string
+  /**
+   * The bridge plugin package's own version. It moves independently of
+   * `bridgeVersion`: the protocol can stay compatible while the plugin gains
+   * providers, and a native client uses this to tell a stale install from a
+   * current one.
+   */
+  readonly pluginVersion: string
   /** The Host release the bridge runs inside; `null` when the Host publishes none. */
   readonly dshVersion: string | null
   readonly providers: readonly ProviderManifestEntry[]

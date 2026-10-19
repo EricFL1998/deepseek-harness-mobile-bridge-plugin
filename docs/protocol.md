@@ -18,6 +18,7 @@ client's decoder is written against; `README.md` explains why each field exists.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `bridgeVersion` | string | Protocol version, currently `1.0.0`. A client refuses an unknown major. |
+| `pluginVersion` | string | The plugin package's own version, moving independently of the protocol. A client compares it against the version it expects to decide whether an update is worth offering. |
 | `dshVersion` | string \| null | The Host release label, or null when it publishes none. |
 | `providers[].id` | string | Stable provider id. |
 | `providers[].version` | number | Provider schema version. Bump means a returned field changed meaning. |

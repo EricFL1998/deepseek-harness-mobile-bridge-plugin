@@ -1,4 +1,4 @@
-# dsh-mobile-bridge bundle patch — one row: the bridge Host plugin.
+# dsh-mobile-bridge-plugin bundle patch — one row: the bridge Host plugin.
 #
 # The bridge is deliberately one row, not a family: its providers are internal
 # modules of this package, so a deployment switches the whole protocol on or off
@@ -10,8 +10,8 @@
 # wants to expose.
 
 - insert:
-    - id: dsh-mobile-bridge
-      name: dsh-mobile-bridge
+    - id: dsh-mobile-bridge-plugin
+      name: dsh-mobile-bridge-plugin
       config:
         enabled: true
         # Empty: evaluate every entry the Host composes.

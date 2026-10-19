@@ -1,4 +1,4 @@
-# dsh-mobile-bridge
+# dsh-mobile-bridge-plugin
 
 A Host-side DSH plugin that exposes the **official web client's own runtime
 data** to native clients (Android, desktop shells, test harnesses) as a stable,
@@ -155,13 +155,28 @@ invocation.
 The package is a DSH bundle: `dsh.bundle.patch` names `cordis.patch.yml`, which
 inserts the one row this plugin is.
 
+This package is **not published to npm**. `lib/` is committed, so a GitHub
+source tarball is directly installable — no build step runs on install.
+
 ```sh
-# in the DSH profile directory
-pnpm add dsh-mobile-bridge
+# inside the Host, in the profile directory
+dsh plugin --profile web add https://github.com/EricFL1998/deepseek-harness-mobile-bridge-plugin
 ```
 
-Then add `dsh-mobile-bridge` to the profile's `dsh.profile.bundles`. The bridge
-registers on the Host's existing `webServer`, so it needs no port of its own.
+Or point at a specific tag for a reproducible install:
+
+```sh
+dsh plugin --profile web add https://github.com/EricFL1998/deepseek-harness-mobile-bridge-plugin#v1.1.0
+```
+
+Then add `dsh-mobile-bridge-plugin` to the profile's `dsh.profile.bundles`. The
+bridge registers on the Host's existing `webServer`, so it needs no port of its
+own.
+
+The Android client performs exactly that install from its settings page: the
+APK ships a small manifest naming this repository and the plugin version it
+expects, and the update button runs the command inside the rootfs. So a bridge
+release reaches existing users without re-downloading a rootfs image.
 
 Configuration is per deployment; see `Config` in `src/index.ts` and the defaults
 in `cordis.patch.yml`. The two worth reading before shipping a client:

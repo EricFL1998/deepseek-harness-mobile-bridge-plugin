@@ -88,7 +88,7 @@ function recorder(): {
 
 /** The plugin's declared identity. */
 test('the plugin declares its name and its one required service', () => {
-  assert.equal(name, 'dsh-mobile-bridge')
+  assert.equal(name, 'dsh-mobile-bridge-plugin')
   assert.deepEqual(inject, ['webServer'])
 })
 

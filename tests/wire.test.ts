@@ -42,7 +42,7 @@ function registryWith(ops: Record<string, (args: Record<string, unknown>) => unk
 test('manifest advertises every provider with its version and capabilities', async () => {
   const handler = createBridgeHandler({
     registry: registryWith({ list: () => [], other: () => 1 }),
-    dshVersion: () => '9.9.9',
+    pluginVersion: () => '1.1.0', dshVersion: () => '9.9.9',
     assemblyWarnings: [],
   })
   const reply = await handler(request({ method: 'GET', path: MANIFEST_PATH }))
@@ -62,7 +62,7 @@ test('manifest advertises every provider with its version and capabilities', asy
 test('manifest reports a null release label when the Host publishes none', async () => {
   const handler = createBridgeHandler({
     registry: registryWith({ list: () => [] }),
-    dshVersion: () => null,
+    pluginVersion: () => '1.1.0', dshVersion: () => null,
     assemblyWarnings: ['no client module registry'],
   })
   const reply = await handler(request({ method: 'GET', path: MANIFEST_PATH }))
@@ -74,7 +74,7 @@ test('manifest reports a null release label when the Host publishes none', async
 test('query answers ok:true with the provider version and empty warnings', async () => {
   const handler = createBridgeHandler({
     registry: registryWith({ list: () => [{ a: 1 }] }),
-    dshVersion: () => '1.0.0',
+    pluginVersion: () => '1.1.0', dshVersion: () => '1.0.0',
     assemblyWarnings: [],
   })
   const reply = await handler(request({
@@ -100,7 +100,7 @@ test('query surfaces provider warnings beside its data', async () => {
         return 'payload'
       },
     }),
-    dshVersion: () => null,
+    pluginVersion: () => '1.1.0', dshVersion: () => null,
     assemblyWarnings: [],
   })
   const reply = await handler(request({ method: 'POST', path: QUERY_PATH, body: { provider: 'demo', op: 'list' } }))
@@ -114,7 +114,7 @@ test('query surfaces provider warnings beside its data', async () => {
 })
 
 test('unknown provider fails with provider/unknown and no data', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const reply = await handler(request({ method: 'POST', path: QUERY_PATH, body: { provider: 'nope', op: 'list' } }))
   assert.deepEqual(reply.body, {
     ok: false,
@@ -125,7 +125,7 @@ test('unknown provider fails with provider/unknown and no data', async () => {
 test('unknown op fails with op/unknown and lists the real capabilities', async () => {
   const handler = createBridgeHandler({
     registry: registryWith({ list: () => [] }),
-    dshVersion: () => null,
+    pluginVersion: () => '1.1.0', dshVersion: () => null,
     assemblyWarnings: [],
   })
   const reply = await handler(request({ method: 'POST', path: QUERY_PATH, body: { provider: 'demo', op: 'nope' } }))
@@ -140,7 +140,7 @@ test('unknown op fails with op/unknown and lists the real capabilities', async (
 })
 
 test('a non-JSON content type is refused before the body is read', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const reply = await handler(request({
     method: 'POST',
     path: QUERY_PATH,
@@ -154,7 +154,7 @@ test('a non-JSON content type is refused before the body is read', async () => {
 })
 
 test('a malformed JSON body fails with request/malformed', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const stream = Readable.from([Buffer.from('{not json', 'utf8')]) as unknown as IncomingMessage
   stream.method = 'POST'
   stream.url = QUERY_PATH
@@ -167,7 +167,7 @@ test('a malformed JSON body fails with request/malformed', async () => {
 })
 
 test('a body missing provider or op fails with request/malformed', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const noProvider = await handler(request({ method: 'POST', path: QUERY_PATH, body: { op: 'list' } }))
   assert.deepEqual(noProvider.body, {
     ok: false,
@@ -181,7 +181,7 @@ test('a body missing provider or op fails with request/malformed', async () => {
 })
 
 test('args must be an object when present', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const reply = await handler(request({
     method: 'POST',
     path: QUERY_PATH,
@@ -194,7 +194,7 @@ test('args must be an object when present', async () => {
 })
 
 test('an oversized body is refused with request/malformed', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const huge = 'x'.repeat(300 * 1024)
   const stream = Readable.from([Buffer.from(JSON.stringify({ provider: 'demo', op: 'list', args: { huge } }), 'utf8')]) as unknown as IncomingMessage
   stream.method = 'POST'
@@ -208,7 +208,7 @@ test('an oversized body is refused with request/malformed', async () => {
 })
 
 test('the wrong method on a route is 405 with an allow header', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const manifestPost = await handler(request({ method: 'POST', path: MANIFEST_PATH, body: {} }))
   assert.equal(manifestPost.status, 405)
   assert.deepEqual(manifestPost.headers, { allow: 'GET' })
@@ -218,7 +218,7 @@ test('the wrong method on a route is 405 with an allow header', async () => {
 })
 
 test('an unknown path is 404 and names it', async () => {
-  const handler = createBridgeHandler({ registry: registryWith({}), dshVersion: () => null, assemblyWarnings: [] })
+  const handler = createBridgeHandler({ registry: registryWith({}), pluginVersion: () => '1.1.0', dshVersion: () => null, assemblyWarnings: [] })
   const reply = await handler(request({ method: 'GET', path: `${BRIDGE_BASE_PATH}/nope` }))
   assert.equal(reply.status, 404)
   assert.deepEqual(reply.body, {
@@ -231,7 +231,7 @@ test('the admission policy runs before any provider is touched', async () => {
   let touched = false
   const handler = createBridgeHandler({
     registry: registryWith({ list: () => { touched = true; return [] } }),
-    dshVersion: () => null,
+    pluginVersion: () => '1.1.0', dshVersion: () => null,
     assemblyWarnings: [],
     admit: () => 401,
   })
@@ -245,7 +245,7 @@ test('an unprojectable value is replaced rather than breaking the response', asy
   cyclic.self = cyclic
   const handler = createBridgeHandler({
     registry: registryWith({ list: () => ({ ok: cyclic, fn: () => 1, big: 10n }) }),
-    dshVersion: () => null,
+    pluginVersion: () => '1.1.0', dshVersion: () => null,
     assemblyWarnings: [],
   })
   const reply = await handler(request({ method: 'POST', path: QUERY_PATH, body: { provider: 'demo', op: 'list' } }))
