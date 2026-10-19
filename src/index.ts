@@ -12,6 +12,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { HostConnection } from './host-services.ts'
@@ -135,6 +136,23 @@ function admissionOf(ctx: Context, request: IncomingMessage): number | undefined
 }
 
 /**
+ * Absolute path of the Host installation's own `node_modules`.
+ *
+ * The official roster lives beside the DSH installation rather than in the
+ * profile, so this is the one directory whose `@deepseek-ai/*` packages describe
+ * what this Host actually ships.
+ * @returns the directory, or undefined when the installation cannot be located.
+ */
+function installModulesPath(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url)
+    return join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'node_modules')
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Assemble the provider table from whatever the composition provides.
  * @param ctx - the plugin context.
  * @param config - resolved config.
@@ -163,11 +181,14 @@ function assembleProviders(ctx: Context, config: Config): { registry: ProviderRe
     },
     maxIconSize: config.maxIconSize,
     iconViewBox: config.iconViewBox,
+    installModules: () => installModulesPath(),
+    localeTags: config.localeTags,
   }))
 
   registry.add(createPackageInventoryProvider({
     pluginManager: () => ctx.get('pluginManager') as PluginManagerFace | undefined,
     pluginInventory: () => ctx.get('pluginInventory') as PluginInventoryFace | undefined,
+    localeTags: config.localeTags,
   }))
 
   const allowlist: RpcAllowEntry[] = config.rpcAllowlist.map(entry => ({

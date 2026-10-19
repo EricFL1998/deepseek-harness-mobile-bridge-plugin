@@ -5,7 +5,9 @@
 
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
-import { rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createClientAssetsProvider } from '../src/providers/client-assets.ts'
 import { createClientSlotsProvider } from '../src/providers/client-slots.ts'
 import { createPackageInventoryProvider } from '../src/providers/package-inventory.ts'
@@ -502,4 +504,71 @@ test('rpc/invoke refuses a result above the byte ceiling', async () => {
     async () => provider.ops.invoke!({ namespace: 'settings', method: 'describe' }, sink()),
     (error: unknown) => error instanceof BridgeFailure && error.code === 'budget/exceeded',
   )
+})
+
+test('client-slots/list falls back to the official roster when the graph composes nothing', async () => {
+  // A prebuilt web client composes no entry graph, so plugins.item would be empty
+  // even though the page has an Official group. The roster's text comes from the
+  // installed packages' own locale files, never from strings inside the bridge.
+  const root = await mkdtemp(join(tmpdir(), 'bridge-official-'))
+  cleanup.push(() => rm(root, { recursive: true, force: true }))
+  const modules = join(root, 'node_modules')
+  for (const [pkg, title, description] of [
+    ['dsh-client-ui-settings-agent-loop', '智能体运行设置', '配置同时执行的工具调用数量上限。'],
+    ['dsh-client-ui-settings-shell', '命令执行设置', '配置命令执行超时和输出长度上限。'],
+  ] as const) {
+    const locale = join(modules, '@deepseek-ai', pkg, 'locale')
+    await mkdir(locale, { recursive: true })
+    await writeFile(join(locale, 'zh.json'), JSON.stringify({ meta: { title, description } }))
+  }
+
+  const provider = createClientSlotsProvider({
+    // A prebuilt web client: the service exists, its graph is simply empty.
+    clientModules: () => ({
+      graph: () => ({ rev: 'empty', entries: [], batches: [] }),
+      clientPath: () => undefined,
+    }),
+    entryIds: [],
+    renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
+    maxIconSize: 256,
+    iconViewBox: '0 0 24 24',
+    installModules: () => modules,
+    localeTags: ['zh'],
+  })
+  const warningSink = sink()
+  const data = await provider.ops.list!({ slot: 'plugins.item' }, warningSink) as {
+    registrations: { id?: string; label?: string; order?: number; package?: string }[]
+  }
+
+  assert.deepEqual(data.registrations.map(({ id, label, order }) => ({ id, label, order })), [
+    { id: 'agent-loop', label: '智能体运行设置', order: 30 },
+    { id: 'shell', label: '命令执行设置', order: 40 },
+  ])
+  // The two packages that are not installed contribute nothing.
+  assert.ok(warningSink.messages.some(message => message.includes('subagent')))
+
+  const shell = data.registrations.find(registration => registration.id === 'shell')!
+  assert.equal(shell.package, '@deepseek-ai/dsh-client-ui-settings-shell')
+
+  // Artwork is available by the same id the registration carries.
+  const icon = await provider.ops['icon-svg']!({ componentId: 'shell', size: 36 }, sink()) as { svg: string }
+  assert.match(icon.svg, /^<svg viewBox="0 0 36 36"/)
+})
+
+test('client-slots/list prefers real registrations over the official roster', async () => {
+  const fixture = await createFixtureComposition()
+  cleanup.push(() => rm(fixture.root, { recursive: true, force: true }))
+  const provider = createClientSlotsProvider({
+    clientModules: () => fixture.clientModules,
+    entryIds: [],
+    renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
+    maxIconSize: 256,
+    iconViewBox: '0 0 24 24',
+    installModules: () => fixture.root,
+    localeTags: ['zh'],
+  })
+  const data = await provider.ops.list!({ slot: 'plugins.item' }, sink()) as {
+    registrations: { id?: string }[]
+  }
+  assert.deepEqual(data.registrations.map(registration => registration.id), ['sample-two', 'sample-one'])
 })

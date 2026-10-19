@@ -6,7 +6,7 @@
  */
 
 import { BridgeFailure, optionalString, requiredString, type Provider } from '../protocol/provider.ts'
-import { firstString } from '../protocol/json.ts'
+import { firstString, localizedString } from '../protocol/json.ts'
 import type { InventoryBundle, InventoryBundleRow, InventoryData, InventoryRow } from '../protocol/types.ts'
 
 /** One row a bundle's patch declares, as the Host reports it. */
@@ -58,13 +58,18 @@ export interface PackageInventoryOptions {
   readonly pluginManager: () => PluginManagerFace | undefined
   /** Resolve the inventory service, or undefined when absent. */
   readonly pluginInventory: () => PluginInventoryFace | undefined
+  /** Locale tags used to resolve locale-mapped titles and descriptions. */
+  readonly localeTags?: readonly string[]
 }
 
 /** Localized display text of one package or row, as the Host resolves it. */
-function displayText(meta: unknown): { title?: string; description?: string; icon?: string } {
-  const title = firstString(meta, ['title'])
-  const description = firstString(meta, ['description'])
-  const icon = firstString(meta, ['icon'])
+function displayText(
+  meta: unknown,
+  localeTags: readonly string[] = [],
+): { title?: string; description?: string; icon?: string } {
+  const title = localizedString(meta, ['title'], localeTags)
+  const description = localizedString(meta, ['description'], localeTags)
+  const icon = localizedString(meta, ['icon'], localeTags)
   return {
     ...(title === undefined ? {} : { title }),
     ...(description === undefined ? {} : { description }),
@@ -91,10 +96,11 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
         if (manager === undefined) {
           throw new BridgeFailure('provider/unavailable', 'this Host composition has no plugin manager')
         }
+        const localeTags = options.localeTags ?? []
         const name = optionalString(args, 'name')
         const bundles = await manager.listBundles()
         const rows = (name === undefined ? bundles : bundles.filter(bundle => bundle.name === name))
-          .map(projectBundle)
+          .map(bundle => projectBundle(bundle, localeTags))
         return { bundles: rows, managementAvailable: true }
       },
 
@@ -140,12 +146,12 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
  * @param bundle - the Host record.
  * @returns the wire row, with absent optional fields omitted.
  */
-function projectBundle(bundle: HostBundleInfo): InventoryBundle {
-  const text = displayText(bundle.meta)
+function projectBundle(bundle: HostBundleInfo, localeTags: readonly string[]): InventoryBundle {
+  const text = displayText(bundle.meta, localeTags)
   const rows: InventoryBundleRow[] = (bundle.rows ?? []).map(row => ({
     rowId: row.rowId,
     moduleName: row.moduleName,
-    ...displayText(row.meta),
+    ...displayText(row.meta, localeTags),
   }))
   return {
     name: bundle.name,
