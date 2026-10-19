@@ -185,7 +185,7 @@ node --experimental-strip-types bin/serve.ts
 ```sh
 pnpm install
 pnpm run typecheck
-pnpm test        # 55 tests: wire contract, providers, VM isolation, assembly
+pnpm test        # 60 tests: wire contract, providers, VM isolation, assembly, fixture
 pnpm run build   # emits lib/
 ```
 

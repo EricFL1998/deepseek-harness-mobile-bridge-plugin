@@ -27,6 +27,7 @@
     "lib/**/*.d.ts",
     "cordis.patch.yml",
     "docs/*.md",
+    "fixtures/*.json",
     "README.md",
     "LICENSE"
   ],
