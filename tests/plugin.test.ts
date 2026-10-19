@@ -13,7 +13,7 @@ import type { IncomingMessage } from 'node:http'
 import { Readable } from 'node:stream'
 import { apply, Config, inject, name } from '../src/index.ts'
 import type { HostWebRoute } from '../src/host-services.ts'
-import { BRIDGE_BASE_PATH, MANIFEST_PATH, QUERY_PATH } from '../src/protocol/types.ts'
+import { BRIDGE_BASE_PATH, EVENTS_PATH, MANIFEST_PATH, QUERY_PATH } from '../src/protocol/types.ts'
 
 /** A recording web-server stand-in. */
 function recordingWebServer(): {
@@ -111,7 +111,7 @@ test('the config schema supplies the documented defaults', () => {
   assert.equal(resolved.requireHostSession, true)
 })
 
-test('apply registers the manifest, query, and base routes as effects', () => {
+test('apply registers the manifest, query, event, and base routes as effects', () => {
   const webServer = recordingWebServer()
   const ctx = fakeContext({ webServer })
   const config = new Config({}) as Parameters<typeof apply>[1]
@@ -119,9 +119,10 @@ test('apply registers the manifest, query, and base routes as effects', () => {
   assert.deepEqual(webServer.routes.map(route => `${route.kind} ${route.path}`), [
     `exact ${MANIFEST_PATH}`,
     `exact ${QUERY_PATH}`,
+    `exact ${EVENTS_PATH}`,
     `prefix ${BRIDGE_BASE_PATH}`,
   ])
-  assert.equal(ctx.effects.length, 3)
+  assert.equal(ctx.effects.length, 4)
 })
 
 test('a disabled bridge registers no route at all', () => {

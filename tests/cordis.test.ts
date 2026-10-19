@@ -13,7 +13,7 @@ import { test } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import * as plugin from '../src/index.ts'
 import type { HostWebRoute } from '../src/host-services.ts'
-import { BRIDGE_BASE_PATH, MANIFEST_PATH, QUERY_PATH } from '../src/protocol/types.ts'
+import { BRIDGE_BASE_PATH, EVENTS_PATH, MANIFEST_PATH, QUERY_PATH } from '../src/protocol/types.ts'
 
 /** A web-server service the plugin can inject. */
 function webServerService(): { routes: HostWebRoute[]; register(route: HostWebRoute): () => void } {
@@ -44,6 +44,7 @@ test('Cordis loads the plugin as a function plugin and it registers its routes',
   assert.deepEqual(webServer.routes.map(route => `${route.kind} ${route.path}`), [
     `exact ${MANIFEST_PATH}`,
     `exact ${QUERY_PATH}`,
+    `exact ${EVENTS_PATH}`,
     `prefix ${BRIDGE_BASE_PATH}`,
   ])
 
@@ -74,6 +75,6 @@ test('the plugin waits for its injected carrier rather than failing to load', as
   const webServer = webServerService()
   ctx.provide('webServer', webServer)
   await new Promise<void>(resolve => { setImmediate(resolve) })
-  assert.equal(webServer.routes.length, 3)
+  assert.equal(webServer.routes.length, 4)
   await fiber.dispose()
 })

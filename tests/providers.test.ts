@@ -15,6 +15,8 @@ import { createPackageInventoryProvider } from '../src/providers/package-invento
 import { createRpcProvider } from '../src/providers/rpc.ts'
 import { BridgeFailure, type WarningSink } from '../src/protocol/provider.ts'
 import { createEchoGateway, createFixtureComposition } from './fixtures.ts'
+import { createEventQueue } from '../src/events.ts'
+import { createEventsProvider } from '../src/providers/events.ts'
 
 /** A warning sink that records what a provider reported. */
 function sink(): WarningSink & { readonly messages: string[] } {
@@ -618,4 +620,16 @@ test('host-slots reports no surfaces when the composition has no settings servic
   const provider = createHostSlotsProvider({ settings: () => undefined, pluginInventory: () => undefined })
   const data = await provider.ops.list!({}, sink()) as { surfaces: unknown[] }
   assert.deepEqual(data.surfaces, [])
+})
+
+test('events drain delivers each toast once and keeps only the newest few', async () => {
+  const queue = createEventQueue()
+  for (let index = 0; index < 20; index += 1) queue.push('toast', `m${index}`)
+  const provider = createEventsProvider({ drain: () => queue.drain() })
+  const first = await provider.ops.pending!({}, sink()) as { events: { text: string; seq: number }[] }
+  // The cap keeps the queue bounded: a stale toast is not worth replaying.
+  assert.equal(first.events.length, 16)
+  assert.equal(first.events.at(-1)!.text, 'm19')
+  const second = await provider.ops.pending!({}, sink()) as { events: unknown[] }
+  assert.deepEqual(second.events, [])
 })
