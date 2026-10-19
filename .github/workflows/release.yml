@@ -1,83 +1,142 @@
-# Publish a release that acts as the version marker for this plugin.
+# Publish a version-marker release when `package.json`'s "release" flag is true.
 #
 # The plugin is installed from a source tarball, so a release carries no assets:
-# the tag IS the artifact. Two consumers read it and nothing else:
+# the tag `v<version>` IS the artifact. Two consumers read it and nothing else:
 #
-#   - the Android client, to decide whether the settings page should offer an
-#     "update plugin" action (it compares the tag against the version installed
-#     inside the rootfs);
+#   - the Android client, to compare against the plugin installed inside the
+#     rootfs and offer the update in Settings → Updates;
 #   - the rootfs build, to decide which plugin version to bundle and stamp into
 #     its `runtimeVersion` as `-bridge<version>`.
 #
-# So a release is created whenever `package.json`'s version moves, and the tag is
-# always `v<version>` — the one shape both consumers parse.
+# Publishing is therefore an explicit act. Pushing ordinary commits — including
+# work-in-progress and half-finished bumps — must never create a release, so the
+# trigger is not the push itself but the flag:
+#
+#   1. bump "version" in package.json
+#   2. set "release": true
+#   3. commit and push
+#
+# This workflow creates the tag and release, then flips the flag back to false
+# and pushes that commit itself, so the flag cannot stay armed and publish the
+# same version twice. To publish again, raise the version first.
+#
+# Keep this workflow's `paths` filter free of package.json: the flag-clearing
+# commit touches that file and would otherwise re-trigger the job.
 
 name: Publish version marker
 
 on:
   push:
     branches: [master]
-    paths:
-      - package.json
-      - .github/workflows/release.yml
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (must match package.json). Leave empty to read package.json.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-marker
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A push made by this job must not need a second checkout cycle to be
+          # readable by its own sibling steps.
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read package version
-        id: version
+      - name: Decide whether to release
+        id: gate
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          FLAG=$(node -p "String(require('./package.json').release)")
+          MANUAL="${{ github.event.inputs.version }}"
+
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "Error: package.json version '$VERSION' is not a plain semver triple."
+            echo "::error::package.json version '$VERSION' is not a plain semver triple."
             exit 1
           fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "$MANUAL" ] && [ "$MANUAL" != "$VERSION" ]; then
+              echo "::error::Requested $MANUAL but package.json says $VERSION."
+              exit 1
+            fi
+            echo "Manual run: releasing $VERSION."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif [ "$FLAG" = "true" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "\"release\" is true: releasing $VERSION."
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "\"release\" is $FLAG, not true: ordinary commit, no release."
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Skip when the tag already exists
+        if: steps.gate.outputs.release == 'true'
         id: existing
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "User-Agent: dsh-mobile-bridge-plugin" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.version.outputs.tag }}")
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.gate.outputs.tag }}")
           if [ "$STATUS" = "200" ]; then
-            echo "Release ${{ steps.version.outputs.tag }} already exists; nothing to do."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Release ${{ steps.gate.outputs.tag }} already exists. Raise the version before releasing again."
+            exit 1
           fi
+          echo "tag is free"
 
       - name: Create the version-marker release
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.gate.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "dsh-mobile-bridge-plugin ${{ steps.version.outputs.version }}"
+          tag_name: ${{ steps.gate.outputs.tag }}
+          name: "dsh-mobile-bridge-plugin ${{ steps.gate.outputs.version }}"
           body: |
-            Plugin version marker **${{ steps.version.outputs.version }}**.
+            Plugin version marker **${{ steps.gate.outputs.version }}**.
 
             This release carries no assets. The plugin is installed from the
             repository source tarball, so the tag is the whole artifact:
 
             ```sh
             dsh plugin --profile web add \
-              https://github.com/${{ github.repository }}#v${{ steps.version.outputs.version }}
+              https://github.com/${{ github.repository }}#v${{ steps.gate.outputs.version }}
             ```
 
             Consumers that read this tag:
 
             - **Android client** — compares it against the plugin version inside
-              the installed rootfs and offers the update in Settings → Updates
-              only. It is an optional update: an older plugin keeps working.
+              the installed rootfs and offers the update in Settings → Updates.
             - **rootfs build** — bundles this version and stamps it into
-              `runtimeVersion` as `-bridge${{ steps.version.outputs.version }}`.
+              `runtimeVersion` as `-bridge${{ steps.gate.outputs.version }}`.
           fail_on_unmatched_files: false
+
+      - name: Clear the release flag
+        if: steps.gate.outputs.release == 'true'
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.release = false;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet package.json; then
+            echo "flag already false"
+            exit 0
+          fi
+          git add package.json
+          git commit -m 'chore: disarm the release flag after v${{ steps.gate.outputs.version }}'
+          git push

@@ -68,3 +68,12 @@ test('the built entry is committed, because a tarball install runs no build', ()
   assert.ok(existsSync(join(packageRoot, pkg.main)), 'the built entry is absent from the tree')
   assert.ok(existsSync(join(packageRoot, pkg.types)), 'the built types are absent from the tree')
 })
+
+test('the release flag is disarmed by default', () => {
+  // Publishing is an explicit act: the workflow only creates a release when this
+  // flag is true, and disarms it afterwards. A committed `true` means someone
+  // armed a release and the workflow did not clear it (or the release was made
+  // by hand), which would republish on the next push.
+  const pkg = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as { release?: unknown }
+  assert.equal(pkg.release, false, 'package.json "release" must be false outside a release commit')
+})

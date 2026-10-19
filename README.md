@@ -181,21 +181,30 @@ release reaches existing users without re-downloading a rootfs image.
 ### Releases are version markers
 
 A GitHub release here carries **no assets**: the plugin is installed from the
-source tarball, so the tag is the whole artifact. `.github/workflows/release.yml`
-creates `v<version>` whenever `package.json`'s version moves.
+source tarball, so the tag is the whole artifact.
 
-Two consumers read that tag and nothing else:
+Publishing is deliberate, never a side effect of pushing. Ordinary commits —
+including work in progress and a half-finished version bump — create nothing.
+To release:
+
+1. bump `version` in `package.json`;
+2. set `"release": true`;
+3. commit and push.
+
+`.github/workflows/release.yml` then creates `v<version>`, and flips the flag
+back to `false` in the same run, so it cannot republish on the next push. A test
+asserts the committed flag is `false`, which catches a hand-made release whose
+flag was left armed.
+
+Two consumers read the tag and nothing else:
 
 - **The Android client** compares it against the plugin version installed inside
-  the rootfs. A difference is an *optional* update, offered in Settings →
-  Updates and nowhere else: the older plugin keeps working, so opening the app
-  never nags.
+  the rootfs. A difference is offered as an update in Settings → Updates.
 - **The rootfs build** bundles that version and stamps it into its
   `runtimeVersion` as `-bridge<version>`, e.g.
   `1.1.0-dsh0.2.1-rc.2-bridge1.1.0`.
 
-So a plugin release needs no APK rebuild and no rootfs rebuild. The rootfs picks
-the new version up the next time it is rebuilt for a DSH upgrade.
+So a plugin release needs no APK rebuild and no rootfs rebuild.
 
 Configuration is per deployment; see `Config` in `src/index.ts` and the defaults
 in `cordis.patch.yml`. The two worth reading before shipping a client:
