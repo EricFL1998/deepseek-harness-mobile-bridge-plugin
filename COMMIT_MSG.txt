@@ -1,0 +1,15 @@
+feat: read slot declarations from the client bundles on disk
+
+Official entries were synthesised from a table inside the plugin because the
+composed boot graph is empty on a Host that serves a prebuilt web client. That
+table guessed at what the client declares.
+
+Every package still ships its client half as `lib/client.js`, and that file is
+the exact code the browser runs. The provider now enumerates those files under the
+installation and evaluates them in the same VM, so `plugins.item` registrations
+come from the real declarations: id, order, label and owning package all originate
+in the bundle. The graph remains the first source for Hosts that compose rows.
+
+Also adds `host-slots`: contributions the Host can enumerate server-side, each
+named with the native placement it belongs in — `settings.page` for a plugin's own
+Settings page, `plugins.row.config` when the namespace belongs to one bundle row.

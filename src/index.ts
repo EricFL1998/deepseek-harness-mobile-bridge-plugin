@@ -29,6 +29,7 @@ import {
 import {
   createPackageInventoryProvider, type PluginInventoryFace, type PluginManagerFace,
 } from './providers/package-inventory.ts'
+import { createHostSlotsProvider, type SlotInventoryFace, type SettingsFace } from './providers/host-slots.ts'
 import { createRpcProvider, type GatewayFace, type RpcAllowEntry } from './providers/rpc.ts'
 import { DEFAULT_RENDER_BUDGET } from './slots/render-tree.ts'
 
@@ -182,6 +183,12 @@ function assembleProviders(ctx: Context, config: Config): { registry: ProviderRe
     maxIconSize: config.maxIconSize,
     iconViewBox: config.iconViewBox,
     installModules: () => installModulesPath(),
+    localeTags: config.localeTags,
+  }))
+
+  registry.add(createHostSlotsProvider({
+    settings: () => ctx.get('settings') as SettingsFace | undefined,
+    pluginInventory: () => ctx.get('pluginInventory') as SlotInventoryFace | undefined,
     localeTags: config.localeTags,
   }))
 

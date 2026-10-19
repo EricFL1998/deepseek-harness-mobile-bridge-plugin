@@ -152,13 +152,14 @@ test('the manifest route answers every provider with its honest availability', a
   // label is absent rather than invented.
   assert.equal(body.dshVersion, null)
   assert.deepEqual(body.providers.map(provider => provider.id), [
-    'client-assets', 'client-slots', 'package-inventory', 'rpc',
+    'client-assets', 'client-slots', 'host-slots', 'package-inventory', 'rpc',
   ])
   assert.deepEqual(body.providers[0]!.capabilities, ['boot-graph', 'module-source', 'locale'])
   assert.deepEqual(body.providers[1]!.capabilities, ['list', 'describe', 'render-tree', 'icon-svg'])
-  assert.deepEqual(body.providers[2]!.capabilities, ['bundles', 'rows', 'meta-icon'])
-  assert.deepEqual(body.providers[3]!.capabilities, ['invoke'])
-  assert.equal(body.providers[3]!.authorization, 'host-session')
+  assert.deepEqual(body.providers[2]!.capabilities, ['list'])
+  assert.deepEqual(body.providers[3]!.capabilities, ['bundles', 'rows', 'meta-icon'])
+  assert.deepEqual(body.providers[4]!.capabilities, ['invoke'])
+  assert.equal(body.providers[4]!.authorization, 'host-session')
   // The assembly reports each missing service instead of failing to load.
   assert.ok(body.warnings.some(warning => warning.includes('client module registry')))
   assert.ok(body.warnings.some(warning => warning.includes('plugin manager')))

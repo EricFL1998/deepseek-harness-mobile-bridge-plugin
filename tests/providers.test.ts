@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createClientAssetsProvider } from '../src/providers/client-assets.ts'
 import { createClientSlotsProvider } from '../src/providers/client-slots.ts'
+import { createHostSlotsProvider } from '../src/providers/host-slots.ts'
 import { createPackageInventoryProvider } from '../src/providers/package-inventory.ts'
 import { createRpcProvider } from '../src/providers/rpc.ts'
 import { BridgeFailure, type WarningSink } from '../src/protocol/provider.ts'
@@ -571,4 +572,46 @@ test('client-slots/list prefers real registrations over the official roster', as
     registrations: { id?: string }[]
   }
   assert.deepEqual(data.registrations.map(registration => registration.id), ['sample-two', 'sample-one'])
+})
+
+test('host-slots lists plugin-declared settings pages with their own titles', async () => {
+  const provider = createHostSlotsProvider({
+    settings: () => ({
+      // Two active namespaces; the second has no Loader row meta, so it falls back
+      // to the namespace instead of disappearing.
+      describe: () => [{ ns: 'agent-loop' }, { ns: 'orphan-ns' }],
+    }),
+    pluginInventory: () => ({
+      list: async () => ({
+        entries: [
+          {
+            entryId: 'agent-loop',
+            moduleName: '@deepseek-ai/dsh-client-ui-settings-agent-loop',
+            enabled: true,
+            meta: { title: { zh: '智能体循环', en: 'Agent loop' }, description: { zh: '控制派发方式' } },
+          },
+        ],
+      }),
+    }),
+    localeTags: ['zh'],
+  })
+  const data = await provider.ops.list!({}, sink()) as {
+    surfaces: { slot: string; id: string; title: string; description?: string; module?: string }[]
+  }
+  assert.deepEqual(data.surfaces, [
+    {
+      slot: 'settings.page',
+      id: 'agent-loop',
+      title: '智能体循环',
+      description: '控制派发方式',
+      module: '@deepseek-ai/dsh-client-ui-settings-agent-loop',
+    },
+    { slot: 'settings.page', id: 'orphan-ns', title: 'orphan-ns' },
+  ])
+})
+
+test('host-slots reports no surfaces when the composition has no settings service', async () => {
+  const provider = createHostSlotsProvider({ settings: () => undefined, pluginInventory: () => undefined })
+  const data = await provider.ops.list!({}, sink()) as { surfaces: unknown[] }
+  assert.deepEqual(data.surfaces, [])
 })
