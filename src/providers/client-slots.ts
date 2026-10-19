@@ -17,7 +17,7 @@ import {
 import type { IconSvgData, RenderTreeData, SlotListData, SlotRegistration } from '../protocol/types.ts'
 import { projectJson } from '../protocol/json.ts'
 import { evaluateBundleFile, type CapturedComponent, type EvaluatedBundle } from '../slots/evaluate.ts'
-import { extractStaticRegistrations, toSlotRegistration } from '../slots/static-slots.ts'
+import { extractStaticRegistrations, resolveStaticLabel, toSlotRegistration } from '../slots/static-slots.ts'
 import { DEFAULT_RENDER_BUDGET, renderComponent, treeToSvg, type RenderBudget } from '../slots/render-tree.ts'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -105,13 +105,13 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
    * `lib/client.js`. Reading those files is what makes the *real* slot declarations
    * reachable there, with no table of expected entries.
    */
-  const selectedEntries = (): { id: string; path: string; rev: string }[] => {
+  const selectedEntries = (): { id: string; dir?: string; path: string; rev: string }[] => {
     const fromGraph = entriesFromGraph()
     return fromGraph.length > 0 ? fromGraph : entriesFromInstallation()
   }
 
   /** Entries named by the Host's composed boot graph. */
-  const entriesFromGraph = (): { id: string; path: string; rev: string }[] => {
+  const entriesFromGraph = (): { id: string; dir?: string; path: string; rev: string }[] => {
     const face = options.clientModules()
     const graph = face?.graph()
     if (face === undefined || graph === undefined) return []
@@ -138,14 +138,14 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
    * a later request continues where this one stopped. Progress is reported as a
    * warning so a client can tell "nothing registered" from "not scanned yet".
    */
-  const entriesFromInstallation = (): { id: string; path: string; rev: string }[] => {
+  const entriesFromInstallation = (): { id: string; dir?: string; path: string; rev: string }[] => {
     // Execution is opt-in: a request that only needs formatting must never run a
     // bundle, or one Client/Host package's mount work can end the process.
     if (options.executeBundles !== true) return []
     const wanted = options.entryIds.length === 0 ? undefined : new Set(options.entryIds)
     const batch = options.maxClientBundles ?? DEFAULT_MAX_CLIENT_BUNDLES
     const catalogue = installationCatalogue()
-    const rows: { id: string; path: string; rev: string }[] = []
+    const rows: { id: string; dir?: string; path: string; rev: string }[] = []
     while (scan.cursor < catalogue.length && rows.length < batch) {
       const bundle = catalogue[scan.cursor]!
       scan.cursor += 1
@@ -159,12 +159,12 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
 
   /** Static registrations across the configured roots, cached per file version. */
   const staticRegistrations = async (warnings: WarningSink): Promise<SlotRegistration[]> =>
-    staticRegistrationsFor(options.clientRoots?.() ?? [], staticCache, warnings)
+    staticRegistrationsFor(options.clientRoots?.() ?? [], staticCache, warnings, options.localeTags ?? [])
 
   /** Every client half found under the configured roots, sorted for a stable walk. */
-  const installationCatalogue = (): { id: string; path: string; rev: string }[] => {
+  const installationCatalogue = (): { id: string; dir?: string; path: string; rev: string }[] => {
     if (scan.catalogue !== undefined) return scan.catalogue
-    const found: { id: string; path: string; rev: string }[] = []
+    const found: { id: string; dir?: string; path: string; rev: string }[] = []
     for (const root of options.clientRoots?.() ?? []) found.push(...listClientBundles(root))
     found.sort((left, right) => left.id.localeCompare(right.id))
     scan.catalogue = found
@@ -418,8 +418,8 @@ export { DEFAULT_RENDER_BUDGET }
  * @param root absolute `node_modules` directory.
  * @returns entry ids and paths, in directory order.
  */
-function listClientBundles(root: string): { id: string; path: string; rev: string }[] {
-  const rows: { id: string; path: string; rev: string }[] = []
+function listClientBundles(root: string): { id: string; dir: string; path: string; rev: string }[] {
+  const rows: { id: string; dir: string; path: string; rev: string }[] = []
   let entries
   try {
     entries = readdirSync(root, { withFileTypes: true })
@@ -443,7 +443,7 @@ function listClientBundles(root: string): { id: string; path: string; rev: strin
         // client half (remote-access, job-controller, …) does real work in `apply`,
         // which must never run inside the bridge VM.
         if (!isUiClientPackage(candidate.dir, candidate.id)) continue
-        rows.push({ id: candidate.id, path: clientPath, rev: `${stat.mtimeMs}:${stat.size}` })
+        rows.push({ id: candidate.id, dir: candidate.dir, path: clientPath, rev: `${stat.mtimeMs}:${stat.size}` })
       } catch {
         // No client half: most packages are Host-only.
       }
@@ -500,6 +500,7 @@ async function staticRegistrationsFor(
   roots: readonly string[],
   cache: Map<string, SlotRegistration[]>,
   warnings: WarningSink,
+  localeTags: readonly string[],
 ): Promise<SlotRegistration[]> {
   const all: SlotRegistration[] = []
   for (const root of roots) {
@@ -511,8 +512,14 @@ async function staticRegistrationsFor(
       }
       try {
         const source = await readFile(bundle.path, 'utf8')
-        const registrations = extractStaticRegistrations(source).map(registration =>
-          toSlotRegistration(bundle.id, registration))
+        const locales = await localeDictionaries(bundle.dir, localeTags)
+        const registrations = extractStaticRegistrations(source).map(registration => {
+          const projected = toSlotRegistration(bundle.id, registration)
+          const label = projected.label ?? resolveStaticLabel(locales, projected.id ?? projected.key)
+          // A package without a dictionary entry keeps no label: the client shows the id,
+          // which is honest, instead of a name nobody wrote.
+          return label === undefined ? projected : { ...projected, label }
+        })
         cache.set(`${bundle.id}@${bundle.rev}`, registrations)
         all.push(...registrations)
       } catch (error) {
@@ -521,4 +528,31 @@ async function staticRegistrationsFor(
     }
   }
   return all
+}
+
+/**
+ * The package's own locale dictionaries, most preferred tag first.
+ *
+ * A client package ships `locale/<tag>.json`; that file is what the browser reads to
+ * label its contributions, so it is also what a static reader must consult. Missing
+ * files simply contribute nothing.
+ * @param dir absolute package directory.
+ * @param tags preferred language tags.
+ * @returns parsed dictionaries in preference order.
+ */
+async function localeDictionaries(
+  dir: string | undefined,
+  tags: readonly string[],
+): Promise<readonly Readonly<Record<string, unknown>>[]> {
+  if (dir === undefined) return []
+  const out: Readonly<Record<string, unknown>>[] = []
+  for (const tag of tags.length === 0 ? ['zh', 'en'] : tags) {
+    const candidate = join(dir, 'locale', `${tag}.json`)
+    try {
+      out.push(JSON.parse(await readFile(candidate, 'utf8')) as Record<string, unknown>)
+    } catch {
+      // No dictionary for this tag: try the next.
+    }
+  }
+  return out
 }

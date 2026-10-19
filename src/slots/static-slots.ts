@@ -164,3 +164,64 @@ export function toSlotRegistration(entryId: string, registration: StaticRegistra
     render: { kind: 'component', componentId: `${entryId}#${registration.id ?? registration.slot}` },
   }
 }
+
+/**
+ * A display label for one registration, read from its package's own locale files.
+ *
+ * The browser resolves labels through a locale dictionary at render time; static
+ * reading has no render, so the dictionaries themselves are the source. Candidates are
+ * tried in the order the page would use: the registration's own id as a key, then the
+ * package's `meta.title`. A registration with no dictionary entry keeps no label —
+ * showing an id is honest, inventing a name is not.
+ * @param locales parsed locale dictionaries, most preferred first.
+ * @param id registration id, when it has one.
+ * @returns the resolved label, or undefined.
+ */
+export function resolveStaticLabel(
+  locales: readonly Readonly<Record<string, unknown>>[],
+  id: string | undefined,
+): string | undefined {
+  if (id === undefined) return undefined
+  const keys = [`${id}.title`, id, `plugins.item.${id}.title`, `meta.${id}.title`]
+  for (const dictionary of locales) {
+    for (const key of keys) {
+      const found = valueAtPath(dictionary, key.split('.'))
+      if (typeof found === 'string' && found.trim() !== '') return found
+    }
+    // A dictionary keyed by slug (`agent-loop` inside `items`) still answers.
+    const nested = findByLeaf(dictionary, id, 'title')
+    if (nested !== undefined) return nested
+  }
+  return undefined
+}
+
+/** Read a dotted path out of a parsed dictionary. */
+function valueAtPath(dictionary: Readonly<Record<string, unknown>>, path: readonly string[]): unknown {
+  let node: unknown = dictionary
+  for (const key of path) {
+    if (typeof node !== 'object' || node === null) return undefined
+    node = (node as Record<string, unknown>)[key]
+  }
+  return node
+}
+
+/** Find `…[slug].title` anywhere in a dictionary, for dictionaries keyed by slug. */
+function findByLeaf(
+  node: unknown,
+  slug: string,
+  leaf: string,
+  depth = 0,
+): string | undefined {
+  if (depth > 6 || typeof node !== 'object' || node === null) return undefined
+  const record = node as Record<string, unknown>
+  const own = record[slug]
+  if (typeof own === 'object' && own !== null) {
+    const title = (own as Record<string, unknown>)[leaf]
+    if (typeof title === 'string' && title.trim() !== '') return title
+  }
+  for (const value of Object.values(record)) {
+    const found = findByLeaf(value, slug, leaf, depth + 1)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
