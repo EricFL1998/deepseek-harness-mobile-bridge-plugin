@@ -13,7 +13,9 @@ import { createBridgeHandler } from '../src/handler.ts'
 import { ProviderRegistry } from '../src/protocol/provider.ts'
 import { MANIFEST_PATH, QUERY_PATH } from '../src/protocol/types.ts'
 import { startStandalone } from '../src/standalone.ts'
-import { extractStaticRegistrations, toSlotRegistration } from '../src/slots/static-slots.ts'
+import {
+  extractStaticRegistrations, resolveStaticLabel, toSlotRegistration,
+} from '../src/slots/static-slots.ts'
 import { evaluateBundleSource, BundleEvaluationError } from '../src/slots/evaluate.ts'
 import { createReactStub } from '../src/slots/react-stub.ts'
 
@@ -203,4 +205,14 @@ test('a static registration lands in the native placement its slot names', () =>
   const projected = toSlotRegistration('@deepseek-ai/dsh-client-x', { slot: 'sidebar.panellist', id: 'p' })
   assert.equal(projected.placement, 'drawer')
   assert.equal(projected.package, '@deepseek-ai/dsh-client-x')
+})
+
+test('a registration label is read from the package locale dictionary', () => {
+  const zh = { items: { 'agent-loop': { title: '智能体运行设置' } }, meta: { title: '包名' } }
+  assert.equal(resolveStaticLabel([zh], 'agent-loop'), '智能体运行设置')
+  // No entry for the id: the package title is not a stand-in for it.
+  assert.equal(resolveStaticLabel([zh], 'unknown-id'), '包名')
+  // Nothing at all: no label, rather than a made-up one.
+  assert.equal(resolveStaticLabel([{}], 'unknown-id'), undefined)
+  assert.equal(resolveStaticLabel([zh], undefined), undefined)
 })
