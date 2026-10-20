@@ -394,8 +394,10 @@ type StaticValue =
 /** Function-shape the analyzer recovered for one component. */
 interface ComponentShape {
   readonly name: string
-  /** Parameter prop names destructured in the parameter, when statically known. */
+  /** Binding identifiers the component's body reads (`{title:e}` → `e`). */
   readonly paramProps: readonly string[]
+  /** Destructured *property* names in declaration order (`{title:e}` → `title`). */
+  readonly paramKeys: readonly string[]
   /** True when the parameter is one plain identifier (`props.x` reads). */
   readonly paramIsIdentifier: boolean
   /** Token index of the expression the component returns, or -1 when none. */
@@ -620,6 +622,7 @@ function readFunction(cursor: Cursor, functionAt: number, model: BundleModel): C
   return {
     name: nameToken.value,
     paramProps: props.names,
+    paramKeys: props.keys,
     paramIsIdentifier: props.identifier,
     bodyStart: returnAt,
     bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, bodyClose) : -1,
@@ -673,6 +676,7 @@ function readFunctionLike(cursor: Cursor, nameToken: Token, initAt: number, mode
     return {
       name: nameToken.value,
       paramProps: props.names,
+    paramKeys: props.keys,
       paramIsIdentifier: props.identifier,
       bodyStart: returnAt,
       bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, bodyClose) : -1,
@@ -682,7 +686,7 @@ function readFunctionLike(cursor: Cursor, nameToken: Token, initAt: number, mode
   // `Name = (…) => …` or `Name = x => …`
   let paramsOpen = initAt
   if (first.kind === 'ident' && cursor.tokens[initAt + 1]?.value === '=>') {
-    const props = { names: [] as string[], identifier: true }
+    const props = { names: [first.value], keys: [first.value], identifier: true }
     return arrowShape(cursor, nameToken, props, initAt + 2)
   }
   if (first.kind !== 'punct' || first.value !== '(') return undefined
@@ -696,7 +700,7 @@ function readFunctionLike(cursor: Cursor, nameToken: Token, initAt: number, mode
 function arrowShape(
   cursor: Cursor,
   nameToken: Token,
-  props: { names: string[]; identifier: boolean },
+  props: { names: string[]; keys: string[]; identifier: boolean },
   bodyStart: number,
 ): ComponentShape {
   let start = bodyStart
@@ -707,6 +711,7 @@ function arrowShape(
     return {
       name: nameToken.value,
       paramProps: props.names,
+    paramKeys: props.keys,
       paramIsIdentifier: props.identifier,
       bodyStart: returnAt,
       bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, bodyClose) : -1,
@@ -717,6 +722,7 @@ function arrowShape(
   return {
     name: nameToken.value,
     paramProps: props.names,
+    paramKeys: props.keys,
     paramIsIdentifier: props.identifier,
     bodyStart: start,
     bodyEnd: end,
@@ -724,17 +730,50 @@ function arrowShape(
   }
 }
 
-/** Parameter names of one parameter list: `{ a, b }` destructuring or one identifier. */
-function readParams(cursor: Cursor, start: number, close: number): { names: string[]; identifier: boolean } {
+/**
+ * Parameter names of one parameter list.
+ *
+ * A destructured parameter yields two parallel lists:
+ * - `keys` — the *property* names, in declaration order (`{title:e}` → `title`).
+ *   Minification never renames object keys, so this order matches the request's
+ *   props order and is the positional-fallback basis;
+ * - `names` — the *binding* identifiers an expression reads (`{title:e}` → `e`,
+ *   `{used}` → `used`). These are what `readStaticValue` resolves.
+ */
+function readParams(
+  cursor: Cursor,
+  start: number,
+  close: number,
+): { names: string[]; keys: string[]; identifier: boolean } {
   const names: string[] = []
+  const keys: string[] = []
   if (cursor.tokens[start]?.kind === 'punct' && cursor.tokens[start]?.value === '{') {
-    for (let at = start + 1; at < close; at += 1) {
+    let at = start + 1
+    while (at < close) {
       const token = cursor.tokens[at]!
-      if (token.kind === 'ident') names.push(token.value)
+      if (token.kind === 'ident' || token.kind === 'string') {
+        const key = token.value
+        keys.push(key)
+        // `{ title }` shorthand binds the same name; `{ title: e }` binds `e`;
+        // `{ title: e = 1 }` still binds `e`.
+        if (cursor.tokens[at + 1]?.kind === 'punct' && cursor.tokens[at + 1]?.value === ':') {
+          const binding = cursor.tokens[at + 2]
+          if (binding !== undefined && binding.kind === 'ident') names.push(binding.value)
+          at += 3
+          continue
+        }
+        names.push(key)
+      }
+      at += 1
     }
-    return { names, identifier: false }
+    return { names, keys, identifier: false }
   }
-  return { names, identifier: cursor.tokens[start]?.kind === 'ident' }
+  const single = cursor.tokens[start]?.kind === 'ident' ? cursor.tokens[start]!.value : undefined
+  return {
+    names: single === undefined ? [] : [single],
+    keys: single === undefined ? [] : [single],
+    identifier: single !== undefined,
+  }
 }
 
 /** First top-level `return` inside one block, or -1. Nested functions do not count. */
@@ -854,16 +893,57 @@ function readStaticObject(
 
 /** Caller-supplied props environment for one render. */
 interface PropEnv {
-  /** Names destructured in the component's parameter; resolves `name` reads. */
+  /** Binding identifiers an expression may read (`{title:e}` → `e`). */
   readonly destructured: ReadonlySet<string>
-  /** Whether the parameter is one identifier, enabling `props.name` reads. */
+  /**
+   * Binding identifiers in declaration order (`{title:e, used:t}` → `[e, t]`).
+   * Parallel to `keys`.
+   */
+  readonly bindings: readonly string[]
+  /**
+   * Destructured *property* names in the same declaration order
+   * (`{title:e, used:t}` → `[title, used]`). Minification never renames object
+   * keys, so a binding's position here is its prop's identity even when the
+   * binding itself was renamed.
+   */
+  readonly keys: readonly string[]
+  /** Whether the parameter is one plain identifier, enabling `props.name` reads. */
   readonly identifier: boolean
   /** The props `component-tree` was called with. */
   readonly values: Readonly<Record<string, unknown>>
 }
 
 function emptyEnv(): PropEnv {
-  return { destructured: new Set(), identifier: false, values: {} }
+  return { destructured: new Set(), bindings: [], keys: [], identifier: false, values: {} }
+}
+
+/** Build the environment one component's parameters read from. */
+function envOf(shape: ComponentShape, props: Readonly<Record<string, unknown>>): PropEnv {
+  return {
+    destructured: new Set(shape.paramProps),
+    bindings: shape.paramProps,
+    keys: shape.paramKeys,
+    identifier: shape.paramIsIdentifier,
+    values: props,
+  }
+}
+
+/**
+ * Resolve one destructured binding against the request's props.
+ *
+ * Exact name first (`{used}` reads `used`); a minified rename (`{title:e}`)
+ * falls back to the *property* name at the same position, which is the
+ * identity minification preserves. `found: false` means the request supplied
+ * no prop for this binding and the client renders the dynamic placeholder.
+ */
+function propValue(name: string, env: PropEnv): { found: boolean; value: unknown } {
+  if (name in env.values) return { found: true, value: env.values[name] }
+  const position = env.bindings.indexOf(name)
+  if (position >= 0 && position < env.keys.length) {
+    const key = env.keys[position]!
+    if (key in env.values) return { found: true, value: env.values[key] }
+  }
+  return { found: false, value: undefined }
 }
 
 /**
@@ -1020,8 +1100,8 @@ function readStaticValue(
         // dynamic data the plugin controls at runtime — reported as
         // `prop:<name>` so the client can say so, not a resolution failure.
         if (env.destructured.has(first.value)) {
-          const value = env.values[first.value]
-          if (value !== undefined) return { t: 'value', v: value }
+          const resolved = propValue(first.value, env)
+          if (resolved.found) return { t: 'value', v: resolved.value }
           return { t: 'opaque', r: `prop:${first.value}` }
         }
         // Component reference: render it inline at the use site. A name that is
@@ -1084,8 +1164,8 @@ function splitConditional(cursor: Cursor, start: number, end: number): [number, 
 /** Resolve one bare identifier against the props environment. */
 function readIdentifier(name: string, env: PropEnv): StaticValue {
   if (env.destructured.has(name)) {
-    const value = env.values[name]
-    return value === undefined ? { t: 'opaque', r: `prop:${name}` } : { t: 'value', v: value }
+    const resolved = propValue(name, env)
+    return resolved.found ? { t: 'value', v: resolved.value } : { t: 'opaque', r: `prop:${name}` }
   }
   if (name in env.values) return { t: 'value', v: env.values[name] }
   return { t: 'opaque', r: 'identifier' }
@@ -1287,11 +1367,7 @@ export function buildComponentTree(
       truncated: false,
     }
   }
-  const env: PropEnv = {
-    destructured: new Set(shape.paramProps),
-    identifier: shape.paramIsIdentifier,
-    values: props,
-  }
+  const env: PropEnv = envOf(shape, props)
   const counter = { nodes: 0, truncated: false }
   const value = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, env)
   const tree = renderValue(value, model, env, counter, 0)
@@ -1326,11 +1402,7 @@ function renderValue(
         const name = value.e.type.slice('component:'.length)
         const shape = model.components.get(name)
         if (shape !== undefined && shape.bodyStart >= 0) {
-          const inner = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, {
-            destructured: new Set(shape.paramProps),
-            identifier: shape.paramIsIdentifier,
-            values: {},
-          })
+          const inner = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, envOf(shape, {}))
           const rendered = renderValue(inner, model, env, counter, depth + 1)
           return { ...value.e, children: rendered === null ? value.e.children : [rendered] }
         }
@@ -1351,11 +1423,7 @@ function renderValue(
       if (shape === undefined || shape.bodyStart < 0) {
         return { kind: 'opaque', reason: `component:${value.n}` }
       }
-      const inner = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, {
-        destructured: new Set(shape.paramProps),
-        identifier: shape.paramIsIdentifier,
-        values: {},
-      })
+      const inner = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, envOf(shape, {}))
       const rendered = renderValue(inner, model, env, counter, depth + 1)
       return {
         kind: 'element',

@@ -201,14 +201,14 @@ describe('buildComponentTree', () => {
     const source = `(()=>{var e={271:(e,t,r)=>{r.d(t,{apply:()=>a});var n=r(609);function s({title:e}){return(0,n.jsxs)("div",{children:[(0,n.jsx)("h3",{children:e}),(0,n.jsx)("button",{children:"登录"})]})}function a(e){e.slots.inject("settings.section",()=>e.slots.register({name:"settings.section",id:"subscription",order:92},s))}},609:e=>{e.exports={}}};window.__ModuleLoader__.load({id:"x",factory:e=>(0,e(271).apply)({})})})();`
     const analyzed = analyzeBundle('x', source)
     assert.equal(analyzed.registrations[0]?.componentName, 's')
-    // Minified destructuring `{title:e}` renames the prop: the static tree
-    // resolves structure and literals, and reports the renamed binding as
-    // dynamic (`prop:e`) — the runtime prop's original name is unrecoverable.
+    // Minified destructuring `{title:e}` renames the binding but never the
+    // object key: the positional fallback maps the renamed binding back to its
+    // prop, so the request's `title` still reaches the tree.
     const built = buildComponentTree(source, 's', { title: '订阅' })
     assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
       kind: 'element', type: 'div',
       children: [
-        { kind: 'element', type: 'h3', children: [{ kind: 'opaque', reason: 'prop:e' }] },
+        { kind: 'element', type: 'h3', children: [{ kind: 'text', value: '订阅' }] },
         { kind: 'element', type: 'button', children: [{ kind: 'text', value: '登录' }] },
       ],
     })
