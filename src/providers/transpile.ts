@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import {
   BridgeFailure, optionalObject, requiredString, type Provider,
 } from '../protocol/provider.ts'
-import type { ComponentTreeData } from '../protocol/types.ts'
+import type { ComponentTreeData, MobileLayoutData } from '../protocol/types.ts'
 import {
   analyzeBundle, buildComponentTree, DEFAULT_TRANSPILE_BUDGET, type TranspileBudget,
 } from '../slots/transpile.ts'
@@ -86,6 +86,48 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
     }
     cache.set(key, bundle)
     return bundle
+  }
+
+  /**
+   * Read a plugin's own native-layout binding for one component.
+   *
+   * A statically read tree is the declared structure. A chip that shows live
+   * numbers has no such structure to read: the numbers are computed by the plugin
+   * at runtime. A plugin can declare, in its manifest, which native component the
+   * client should draw instead and which result paths fill it.
+   *
+   * @param packageName - the `<package>` half of the component identity.
+   * @param member - the `<id>` half.
+   * @returns the binding, or undefined when the plugin declares none.
+   */
+  const mobileLayout = async (
+    packageName: string,
+    member: string,
+  ): Promise<MobileLayoutData | undefined> => {
+    for (const root of options.clientRoots()) {
+      const manifest = join(root, packageName, 'package.json')
+      let pkg: Record<string, unknown>
+      try {
+        pkg = JSON.parse(await readFile(manifest, 'utf8')) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      const dsh = pkg.dsh
+      if (dsh === null || typeof dsh !== 'object') return undefined
+      const mobile = (dsh as Record<string, unknown>).mobile
+      if (mobile === null || typeof mobile !== 'object') return undefined
+      const layout = (mobile as Record<string, unknown>).layout
+      if (layout === null || typeof layout !== 'object') return undefined
+      for (const [key, value] of Object.entries(layout as Record<string, unknown>)) {
+        // Keys are `<slot>/<id>` or a bare `<id>`; either way the id half must match.
+        const id = key.includes('/') ? key.slice(key.lastIndexOf('/') + 1) : key
+        if (id !== member) continue
+        if (value === null || typeof value !== 'object') continue
+        return value as MobileLayoutData
+      }
+      return undefined
+    }
+    return undefined
   }
 
   /** Every `lib/client.js` under the configured roots, lazily catalogued. */
@@ -162,6 +204,7 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
           tree: sanitizeTree(built.tree),
           warnings: built.warnings,
           truncated: built.truncated,
+          layout: (await mobileLayout(packageName, member)) ?? null,
         }
       },
 

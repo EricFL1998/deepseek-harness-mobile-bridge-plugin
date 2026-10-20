@@ -324,3 +324,30 @@ export interface SlotSurfaceData {
 
 /** Route plugins POST a transient message to. */
 export const EVENTS_PATH = '/dsh-mobile/bridge/v1/events'
+
+/**
+ * A plugin's own native-layout binding for one component (`dsh.mobile.layout`).
+ *
+ * A static tree is the declared structure; a chip that shows live numbers cannot be
+ * read that way, because those numbers are computed at runtime. A plugin that wants
+ * a native look for such a slot names a native component and the data paths to bind,
+ * and the client renders that instead of the raw tree.
+ */
+export interface MobileLayoutData {
+  /** Native component the client knows how to draw (`value-chip` today). */
+  readonly kind: string
+  /** Host method the bound values come from. */
+  readonly data?: {
+    readonly method: string
+    readonly payload?: Record<string, unknown>
+  }
+  /** Prop name to path into the method's result object. */
+  readonly bind?: Record<string, string>
+  /** Optional static label shown next to the values. */
+  readonly label?: string
+}
+
+export interface ComponentTreeData {
+  /** Present when the plugin declares a native layout for this component. */
+  readonly layout?: MobileLayoutData | null
+}
