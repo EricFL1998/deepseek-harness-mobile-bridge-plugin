@@ -125,6 +125,16 @@ export interface SlotRegistration {
     readonly key?: string;
     readonly order?: number;
     readonly label?: string;
+    /**
+     * Dictionary key the registration's label resolves through.
+     *
+     * A client bundle that localizes its label writes `label: () => t("nav")`; the
+     * bridge resolves that key through the bundle's own copy tables and reports the
+     * text as `label`, keeping the key here so a client can tell a resolved
+     * translation from a literal. Absent when the registration declares no thunk
+     * label, or on responses from older bridges.
+     */
+    readonly labelKey?: string;
     readonly priority?: number;
     /** Package that owns the contribution, when the evaluating bundle declared one. */
     readonly package?: string;

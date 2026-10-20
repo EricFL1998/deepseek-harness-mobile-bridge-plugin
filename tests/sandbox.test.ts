@@ -14,8 +14,9 @@ import { ProviderRegistry } from '../src/protocol/provider.ts'
 import { MANIFEST_PATH, QUERY_PATH } from '../src/protocol/types.ts'
 import { startStandalone } from '../src/standalone.ts'
 import {
-  extractStaticRegistrations, resolveStaticLabel, toSlotRegistration,
+  extractStaticRegistrations, resolveStaticLabel, resolveStaticLabelFor, toSlotRegistration,
 } from '../src/slots/static-slots.ts'
+import { bundleDictionaries } from '../src/slots/bundle-locale.ts'
 import { evaluateBundleSource, BundleEvaluationError } from '../src/slots/evaluate.ts'
 import { createReactStub } from '../src/slots/react-stub.ts'
 
@@ -205,6 +206,88 @@ test('a static registration lands in the native placement its slot names', () =>
   const projected = toSlotRegistration('@deepseek-ai/dsh-client-x', { slot: 'sidebar.panellist', id: 'p' })
   assert.equal(projected.placement, 'drawer')
   assert.equal(projected.package, '@deepseek-ai/dsh-client-x')
+})
+
+test('static extraction reads template-literal registrations (minified bundles)', () => {
+  // The genui client is minified with backtick strings; reading only quoted
+  // strings missed its keyed toolview entirely.
+  const source = `
+    function apply(e) {
+      e.slots.inject(\`tool.call.toolview\`, () => e.slots.register({ name: \`tool.call.toolview\`, key: \`render_ui\` }, X));
+      e.slots.inject(\`conversation.input.dock\`, () => e.slots.register({ name: \`conversation.input.dock\`, id: \`genui-panel\`, order: 50 }, Y));
+    }
+  `
+  const found = extractStaticRegistrations(source)
+  assert.deepEqual(found, [
+    { slot: 'tool.call.toolview', key: 'render_ui' },
+    { slot: 'conversation.input.dock', id: 'genui-panel', order: 50 },
+  ])
+})
+
+test('a keyed registration gets its keyed component identity', () => {
+  const projected = toSlotRegistration('@changfenhuang/dsh-genui', {
+    slot: 'tool.call.toolview',
+    key: 'render_ui',
+  })
+  assert.equal(projected.render?.componentId, '@changfenhuang/dsh-genui#render_ui')
+})
+
+test('static extraction captures literal and thunk labels', () => {
+  const source = `
+    var A = class {
+      apply(t) {
+        t.slots.register({ name: "settings.section", id: "subscriptions", order: 92,
+                           label: () => t("nav") }, X)
+        t.slots.register({ name: "plugins.item", id: "literal", label: "Sample One" }, Y)
+        t.slots.register({ name: "plugins.item", id: "text-thunk", label: () => "Sample Two" }, Z)
+        t.slots.register({
+          name: "plugins.item",
+          id: "computed",
+          label: () => names[kind],
+          inject: () => ({ label: "not this one" })
+        }, W)
+        t.slots.register({ name: "plugins.item", id: "minified",
+                           label: () => (0, x.t)("nav") }, V)
+      }
+    };
+  `
+  const found = extractStaticRegistrations(source)
+  assert.deepEqual(found, [
+    { slot: 'settings.section', id: 'subscriptions', order: 92, labelKey: 'nav' },
+    { slot: 'plugins.item', id: 'literal', label: 'Sample One' },
+    { slot: 'plugins.item', id: 'text-thunk', label: 'Sample Two' },
+    // A computed label and a label inside `inject()` both yield nothing.
+    { slot: 'plugins.item', id: 'computed' },
+    { slot: 'plugins.item', id: 'minified', labelKey: 'nav' },
+  ])
+})
+
+test('a thunk label resolves through the bundle inline dictionaries per language', () => {
+  const source = `
+    window.__ModuleLoader__.load({ id: "probe", factory: (require) => {
+      const en = { nav: "Subscriptions", a: "a", b: "b", c: "c", d: "d", e: "e" };
+      const zh = { nav: "订阅", a: "a", b: "b", c: "c", d: "d", e: "e" };
+      return { apply(ctx) {
+        ctx.slots.register({ name: "settings.section", id: "subscriptions",
+                             label: () => t("nav") }, X);
+      } };
+    } });
+  `
+  const dictionaries = bundleDictionaries(source)
+  const [registration] = extractStaticRegistrations(source)
+  assert.equal(
+    resolveStaticLabelFor(registration!, dictionaries, [], ['zh-Hans-CN', 'zh']),
+    '订阅',
+  )
+  assert.equal(
+    resolveStaticLabelFor(registration!, dictionaries, [], ['en-US', 'en']),
+    'Subscriptions',
+  )
+  // Nothing the preference reaches names the key: no invented label.
+  assert.equal(
+    resolveStaticLabelFor({ slot: 'settings.section', id: 'x', labelKey: 'absent' }, dictionaries, [], ['en']),
+    undefined,
+  )
 })
 
 test('a registration label is read from the package locale dictionary', () => {

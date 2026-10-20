@@ -98,6 +98,69 @@ export function optionalString(
 }
 
 /**
+ * Read an optional BCP-47 locale tag.
+ *
+ * A locale rides beside the data it localizes rather than replacing the Host's
+ * configured `localeTags`, so one client asking for `zh-Hans-CN` and another for
+ * `en` receive their own language from the same Host. Underscores are accepted as
+ * separators because native clients sometimes send POSIX-style tags.
+ *
+ * @param args - the request arguments.
+ * @param field - optional field name.
+ * @returns the normalized tag, or undefined when absent.
+ * @throws {BridgeFailure} `args/invalid` when present and not a language tag.
+ */
+export function optionalLocale(
+  args: Readonly<Record<string, unknown>>,
+  field = 'locale',
+): string | undefined {
+  const value = optionalString(args, field)
+  if (value === undefined) return undefined
+  const tag = value.trim().replaceAll('_', '-')
+  // BCP-47 subtags are alphanumeric; the length bound keeps a cache key derived
+  // from the tag from growing without limit.
+  if (tag === '' || tag.length > 64 || !/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(tag)) {
+    throw new BridgeFailure('args/invalid', `args.${field} must be a BCP-47 language tag`)
+  }
+  return tag
+}
+
+/**
+ * Language tags one request resolves text with, most preferred first.
+ *
+ * The order is the one a client's own language negotiation applies: the tag it
+ * asked for, that tag's base language (`zh-Hans-CN` → `zh`), then the tags the
+ * Host is configured with. Duplicates are dropped case-insensitively, so a
+ * configured `zh` does not appear twice for a `zh-CN` request.
+ *
+ * @param requested - the request's own `locale`, when it sent one.
+ * @param configured - the Host's configured tags, in preference order.
+ * @returns the tags to try, most preferred first.
+ */
+export function preferredLocaleTags(
+  requested: string | undefined,
+  configured: readonly string[],
+): string[] {
+  const tags: string[] = []
+  const seen = new Set<string>()
+  const add = (raw: string): void => {
+    const tag = raw.trim().replaceAll('_', '-')
+    if (tag === '') return
+    const key = tag.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    tags.push(tag)
+  }
+  if (requested !== undefined) {
+    add(requested)
+    const base = requested.split('-')[0]
+    if (base !== undefined) add(base)
+  }
+  for (const tag of configured) add(tag)
+  return tags
+}
+
+/**
  * Read an optional positive integer field, clamped to a ceiling.
  * @param args - the request arguments.
  * @param field - optional field name.

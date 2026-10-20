@@ -11,15 +11,18 @@
  */
 
 import {
-  BridgeFailure, optionalObject, optionalPositiveInt, optionalString, requiredString,
-  type Provider, type WarningSink,
+  BridgeFailure, optionalLocale, optionalObject, optionalPositiveInt, optionalString, preferredLocaleTags,
+  requiredString, type Provider, type WarningSink,
 } from '../protocol/provider.ts'
 import type { DispatchData, IconSvgData, RenderTreeData, SlotListData, SlotRegistration } from '../protocol/types.ts'
 import { projectJson } from '../protocol/json.ts'
 import { evaluateBundleFile, type CapturedComponent, type EvaluatedBundle } from '../slots/evaluate.ts'
-import { extractStaticRegistrations, resolveStaticLabel, toSlotRegistration } from '../slots/static-slots.ts'
+import {
+  extractStaticRegistrations, resolveStaticLabelFor, toSlotRegistration, type StaticRegistration,
+} from '../slots/static-slots.ts'
+import { bundleDictionaries } from '../slots/bundle-locale.ts'
 import { DEFAULT_RENDER_BUDGET, renderComponent, treeToSvg, type RenderBudget } from '../slots/render-tree.ts'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { placementOf } from '../slot-placements.ts'
@@ -101,6 +104,12 @@ interface CachedEvaluation {
   readonly components: Map<string, CapturedComponent>
 }
 
+/** One bundle parsed statically: its registrations and the copy tables they resolve through. */
+interface StaticBundleSource {
+  readonly registrations: readonly StaticRegistration[]
+  readonly dictionaries: ReadonlyMap<string, ReadonlyMap<string, string>>
+}
+
 /**
  * Build the `client-slots` provider.
  * @param options - service accessor, entry selection, and budgets.
@@ -116,8 +125,10 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
     registrations: SlotRegistration[]
     emptySlots: Set<string>
   } = { cursor: 0, seen: new Set(), registrations: [], emptySlots: new Set() }
-  /** 静态抽取结果：不执行 bundle，按文件版本缓存。 */
+  /** 静态抽取结果：不执行 bundle，按「文件版本 + 语言偏好」缓存。 */
   const staticCache = new Map<string, SlotRegistration[]>()
+  /** 每个 bundle 版本的静态解析：注册与其内联词典，与语言偏好无关。 */
+  const staticSources = new Map<string, StaticBundleSource>()
 
   /**
    * The client bundles this provider may evaluate, in declared order.
@@ -184,9 +195,14 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
     return rows
   }
 
-  /** Static registrations across the configured roots, cached per file version. */
-  const staticRegistrations = async (warnings: WarningSink): Promise<SlotRegistration[]> =>
-    staticRegistrationsFor(options.clientRoots?.() ?? [], staticCache, warnings, options.localeTags ?? [])
+  /** Static registrations across the configured roots, cached per file version and locale preference. */
+  const staticRegistrations = async (
+    localeTags: readonly string[],
+    warnings: WarningSink,
+  ): Promise<SlotRegistration[]> =>
+    staticRegistrationsFor(
+      options.clientRoots?.() ?? [], staticSources, staticCache, warnings, localeTags,
+    )
 
   /** Every client half found under the configured roots, sorted for a stable walk. */
   const installationCatalogue = (): { id: string; dir?: string; path: string; rev: string }[] => {
@@ -265,10 +281,13 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
    * package's own locale file; a package that is not installed contributes
    * nothing, so the roster always describes this Host rather than a design.
    */
-  const officialItems = async (warnings: WarningSink): Promise<SlotRegistration[]> => {
+  const officialItems = async (
+    localeTags: readonly string[],
+    warnings: WarningSink,
+  ): Promise<SlotRegistration[]> => {
     const modules = options.installModules?.()
     if (modules === undefined) return []
-    const tags = options.localeTags ?? []
+    const tags = localeTags.length === 0 ? ['zh', 'en'] : localeTags
     const registrations: SlotRegistration[] = []
     for (const item of OFFICIAL_PLUGIN_ITEMS) {
       let text
@@ -299,13 +318,10 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
       /** Every captured registration, optionally narrowed to one slot. */
       list: async (args, warnings): Promise<SlotListData> => {
         const slot = optionalString(args, 'slot')
-        // 静态抽取先做：它只读文本，不受内存限制，也不执行插件代码。
-        for (const registration of await staticRegistrations(warnings)) {
-          if (!scan.seen.has(`static:${registration.slot}#${registration.id ?? ''}`)) {
-            scan.seen.add(`static:${registration.slot}#${registration.id ?? ''}`)
-            scan.registrations.push(registration)
-          }
-        }
+        const localeTags = preferredLocaleTags(optionalLocale(args), options.localeTags ?? [])
+        // 静态抽取先做：它只读文本，不受内存限制，也不执行插件代码。标签按本次请求的
+        // 语言解析，因此同一份缓存可以服务不同语言的客户端。
+        const staticList = await staticRegistrations(localeTags, warnings)
         const entries = await evaluateAll(warnings)
         // Incremental scan: this batch joins what earlier requests collected, and the
         // next request continues the walk. Bundles already evaluated are not repeated.
@@ -329,16 +345,19 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
             })
           }
         }
-        const touched = new Set(scan.registrations.map(registration => registration.slot))
+        // One contribution per slot/id/package: the same bundle is reachable through
+        // several installation roots, and the client must not list a row three times.
+        const collected = dedupeRegistrations([...staticList, ...scan.registrations])
+        const touched = new Set(collected.map(registration => registration.slot))
         for (const empty of scan.emptySlots) touched.add(empty)
-        const registrations = scan.registrations
+        const registrations = collected
           .filter(registration => slot === undefined || registration.slot === slot)
         const occupied = new Set(registrations.map(registration => registration.slot))
         // The official roster answers only while nothing real has been collected for
         // that slot; an incremental scan therefore replaces it as it progresses.
         const asksOfficial = slot === undefined || slot === OFFICIAL_ITEM_SLOT
         if (asksOfficial && !occupied.has(OFFICIAL_ITEM_SLOT)) {
-          for (const registration of await officialItems(warnings)) {
+          for (const registration of await officialItems(localeTags, warnings)) {
             registrations.push(registration)
             occupied.add(registration.slot)
           }
@@ -350,7 +369,7 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
         }
         return {
           slot: slot ?? null,
-          registrations: registrations.sort(compareRegistrations),
+          registrations: dedupeRegistrations(registrations).sort(compareRegistrations),
           emptySlots: [...touched].filter(name => !occupied.has(name)).sort(),
         }
       },
@@ -359,6 +378,15 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
       describe: async (args, warnings): Promise<SlotRegistration> => {
         const slot = requiredString(args, 'slot')
         const id = requiredString(args, 'id')
+        const localeTags = preferredLocaleTags(optionalLocale(args), options.localeTags ?? [])
+        // The static read is the phone's only source, and it carries the localized
+        // label; the evaluated path answers only when a bundle was executed.
+        for (const registration of await staticRegistrations(localeTags, warnings)) {
+          if (registration.slot !== slot) continue
+          if (registration.id !== id && registration.key !== id
+            && registration.render?.componentId !== id) continue
+          return registration
+        }
         const entries = await evaluateAll(warnings)
         for (const entry of entries) {
           const match = entry.bundle.registrations.find(
@@ -593,47 +621,138 @@ function isUiClientPackage(dir: string, id: string): boolean {
 }
 
 /**
+ * Remove the duplicate registrations one bundle contributes through more than one root.
+ *
+ * A phone Host locates its installation's `node_modules` through several path forms
+ * (a `require.resolve` answer, the running entry point, and the profile's own
+ * `node_modules` symlink). Walking each root re-discovers the same client halves, so
+ * the same `settings.section` contribution arrived three times and the Settings page
+ * listed it three times. Identity is the contribution itself, not the path it was
+ * found through:
+ *
+ * ```
+ * `${slot}|${id ?? key ?? ''}|${package}`
+ * ```
+ *
+ * The first occurrence wins, which is discovery order: roots are ordered install-first,
+ * so the authoritative copy supplies the row (and its localized label).
+ *
+ * @param registrations rows in discovery order.
+ * @returns one row per contribution identity, in the original order.
+ */
+export function dedupeRegistrations(
+  registrations: readonly SlotRegistration[],
+): SlotRegistration[] {
+  const seen = new Set<string>()
+  const unique: SlotRegistration[] = []
+  for (const registration of registrations) {
+    const identity = `${registration.slot}|${registration.id ?? registration.key ?? ''}|${registration.package ?? ''}`
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    unique.push(registration)
+  }
+  return unique
+}
+
+/**
+ * The roots to scan, with textual and symlink duplicates resolved away.
+ *
+ * Two roots that are the same directory reached by different path spellings would
+ * otherwise repeat the whole scan. A root that cannot be resolved is kept as written:
+ * the scanner already treats an unreadable root as "no bundles", so dropping it would
+ * be the one failure mode that hides a plugin's UI.
+ *
+ * @param roots absolute `node_modules` directories, authoritative first.
+ * @returns the distinct directories, in the same order.
+ */
+function uniqueRoots(roots: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const root of roots) {
+    let key = root
+    try {
+      key = realpathSync(root)
+    } catch {
+      // Keep the literal path; the scanner reports an unreadable root by finding nothing.
+    }
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(root)
+  }
+  return unique
+}
+
+/**
  * Registrations read from every UI client bundle's source.
  *
  * This is the discovery path that works on a phone Host: it reads text instead of
  * executing bundles, so a client half's mount work never runs and the heap stays flat.
- * Results are cached per file version, and a missing or unreadable bundle contributes
- * nothing rather than failing the whole list.
- * @param warnings sink for per-bundle notes.
- * @returns registrations from all bundles, in package order.
+ * Labels are resolved per request: a registration written as `label: () => t("nav")`
+ * takes its text from the bundle's own inline copy tables, in the language the
+ * caller's tag preference selects. Results are cached per file version and tag
+ * preference, and a missing or unreadable bundle contributes nothing rather than
+ * failing the whole list.
+ *
+ * A bundle reachable through several roots is scanned once (`id@rev` is the same file
+ * version everywhere), and the returned rows are deduplicated by contribution
+ * identity, because a symlinked path can still present the same bundle under another
+ * root spelling.
+ * @param roots - directories whose packages may ship a `lib/client.js`.
+ * @param sources - per-version cache of the static parse and its copy tables.
+ * @param cache - per-version-and-language cache of the projected registrations.
+ * @param warnings - sink for per-bundle notes.
+ * @returns registrations from all bundles, in package order, one per contribution.
  */
 async function staticRegistrationsFor(
   roots: readonly string[],
+  sources: Map<string, StaticBundleSource>,
   cache: Map<string, SlotRegistration[]>,
   warnings: WarningSink,
   localeTags: readonly string[],
 ): Promise<SlotRegistration[]> {
+  // 客户端换语言会产生新的缓存键；文本很小，重新解析比无界增长便宜。
+  if (cache.size > 128) cache.clear()
   const all: SlotRegistration[] = []
-  for (const root of roots) {
+  /** `id@rev` pairs already scanned in this call: the same file under another root. */
+  const scanned = new Set<string>()
+  for (const root of uniqueRoots(roots)) {
     for (const bundle of listClientBundles(root)) {
-      const cached = cache.get(`${bundle.id}@${bundle.rev}`)
+      const versionKey = `${bundle.id}@${bundle.rev}`
+      // The same package version is the same bundle no matter which root reached it.
+      if (scanned.has(versionKey)) continue
+      scanned.add(versionKey)
+      const cacheKey = `${versionKey}@${localeTags.join(',')}`
+      const cached = cache.get(cacheKey)
       if (cached !== undefined) {
         all.push(...cached)
         continue
       }
       try {
-        const source = await readFile(bundle.path, 'utf8')
+        let scan = sources.get(versionKey)
+        if (scan === undefined) {
+          const source = await readFile(bundle.path, 'utf8')
+          scan = {
+            registrations: extractStaticRegistrations(source),
+            dictionaries: bundleDictionaries(source),
+          }
+          sources.set(versionKey, scan)
+        }
         const locales = await localeDictionaries(bundle.dir, localeTags)
-        const registrations = extractStaticRegistrations(source).map(registration => {
+        const registrations = scan.registrations.map(registration => {
           const projected = toSlotRegistration(bundle.id, registration)
-          const label = projected.label ?? resolveStaticLabel(locales, projected.id ?? projected.key)
-          // A package without a dictionary entry keeps no label: the client shows the id,
+          const label = resolveStaticLabelFor(registration, scan.dictionaries, locales, localeTags)
+          // A package without any matching text keeps no label: the client shows the id,
           // which is honest, instead of a name nobody wrote.
           return label === undefined ? projected : { ...projected, label }
         })
-        cache.set(`${bundle.id}@${bundle.rev}`, registrations)
+        cache.set(cacheKey, registrations)
         all.push(...registrations)
       } catch (error) {
         warnings.warn(`${bundle.id}: cannot read its client bundle (${(error as Error).message})`)
       }
     }
   }
-  return all
+  return dedupeRegistrations(all)
 }
 
 /**

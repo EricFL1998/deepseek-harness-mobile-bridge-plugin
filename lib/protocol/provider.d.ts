@@ -61,6 +61,33 @@ export declare function requiredString(args: Readonly<Record<string, unknown>>, 
  */
 export declare function optionalString(args: Readonly<Record<string, unknown>>, field: string): string | undefined;
 /**
+ * Read an optional BCP-47 locale tag.
+ *
+ * A locale rides beside the data it localizes rather than replacing the Host's
+ * configured `localeTags`, so one client asking for `zh-Hans-CN` and another for
+ * `en` receive their own language from the same Host. Underscores are accepted as
+ * separators because native clients sometimes send POSIX-style tags.
+ *
+ * @param args - the request arguments.
+ * @param field - optional field name.
+ * @returns the normalized tag, or undefined when absent.
+ * @throws {BridgeFailure} `args/invalid` when present and not a language tag.
+ */
+export declare function optionalLocale(args: Readonly<Record<string, unknown>>, field?: string): string | undefined;
+/**
+ * Language tags one request resolves text with, most preferred first.
+ *
+ * The order is the one a client's own language negotiation applies: the tag it
+ * asked for, that tag's base language (`zh-Hans-CN` → `zh`), then the tags the
+ * Host is configured with. Duplicates are dropped case-insensitively, so a
+ * configured `zh` does not appear twice for a `zh-CN` request.
+ *
+ * @param requested - the request's own `locale`, when it sent one.
+ * @param configured - the Host's configured tags, in preference order.
+ * @returns the tags to try, most preferred first.
+ */
+export declare function preferredLocaleTags(requested: string | undefined, configured: readonly string[]): string[];
+/**
  * Read an optional positive integer field, clamped to a ceiling.
  * @param args - the request arguments.
  * @param field - optional field name.

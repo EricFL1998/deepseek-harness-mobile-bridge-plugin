@@ -10,6 +10,7 @@
  * repeated query re-reads nothing.
  */
 import { type Provider } from '../protocol/provider.ts';
+import type { SlotRegistration } from '../protocol/types.ts';
 import { DEFAULT_RENDER_BUDGET, type RenderBudget } from '../slots/render-tree.ts';
 import type { ClientModulesFace } from './client-assets.ts';
 /** `client-slots` configuration. */
@@ -69,3 +70,24 @@ export interface ClientSlotsOptions {
 export declare function createClientSlotsProvider(options: ClientSlotsOptions): Provider;
 /** Re-exported so the plugin assembly can share one budget default. */
 export { DEFAULT_RENDER_BUDGET };
+/**
+ * Remove the duplicate registrations one bundle contributes through more than one root.
+ *
+ * A phone Host locates its installation's `node_modules` through several path forms
+ * (a `require.resolve` answer, the running entry point, and the profile's own
+ * `node_modules` symlink). Walking each root re-discovers the same client halves, so
+ * the same `settings.section` contribution arrived three times and the Settings page
+ * listed it three times. Identity is the contribution itself, not the path it was
+ * found through:
+ *
+ * ```
+ * `${slot}|${id ?? key ?? ''}|${package}`
+ * ```
+ *
+ * The first occurrence wins, which is discovery order: roots are ordered install-first,
+ * so the authoritative copy supplies the row (and its localized label).
+ *
+ * @param registrations rows in discovery order.
+ * @returns one row per contribution identity, in the original order.
+ */
+export declare function dedupeRegistrations(registrations: readonly SlotRegistration[]): SlotRegistration[];

@@ -153,17 +153,16 @@ test('the manifest route answers every provider with its honest availability', a
   // label is absent rather than invented.
   assert.equal(body.dshVersion, null)
   assert.deepEqual(body.providers.map(provider => provider.id), [
-    'client-assets', 'client-slots', 'transpile', 'host-slots', 'package-inventory', 'settings', 'events', 'rpc',
+    'client-assets', 'client-slots', 'host-slots', 'package-inventory', 'settings', 'events', 'rpc',
   ])
   assert.deepEqual(body.providers[0]!.capabilities, ['boot-graph', 'loader-rows', 'module-source', 'locale'])
   assert.deepEqual(body.providers[1]!.capabilities, ['list', 'describe', 'render-tree', 'icon-svg', 'dispatch'])
-  assert.deepEqual(body.providers[2]!.capabilities, ['component-tree', 'bundles'])
-  assert.deepEqual(body.providers[3]!.capabilities, ['list'])
-  assert.deepEqual(body.providers[4]!.capabilities, ['bundles', 'rows', 'meta-icon'])
-  assert.deepEqual(body.providers[5]!.capabilities, ['describe', 'update'])
-  assert.deepEqual(body.providers[6]!.capabilities, ['pending'])
-  assert.deepEqual(body.providers[7]!.capabilities, ['invoke'])
-  assert.equal(body.providers[7]!.authorization, 'host-session')
+  assert.deepEqual(body.providers[2]!.capabilities, ['list'])
+  assert.deepEqual(body.providers[3]!.capabilities, ['bundles', 'rows', 'meta-icon'])
+  assert.deepEqual(body.providers[4]!.capabilities, ['describe', 'update'])
+  assert.deepEqual(body.providers[5]!.capabilities, ['pending'])
+  assert.deepEqual(body.providers[6]!.capabilities, ['invoke'])
+  assert.equal(body.providers[6]!.authorization, 'host-session')
   // The assembly reports each missing service instead of failing to load.
   assert.ok(body.warnings.some(warning => warning.includes('client module registry')))
   assert.ok(body.warnings.some(warning => warning.includes('plugin manager')))

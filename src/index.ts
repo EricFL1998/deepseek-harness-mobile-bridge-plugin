@@ -11,7 +11,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readdirSync } from 'node:fs'
+import { readdirSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -31,7 +31,6 @@ import {
 import {
   createClientSlotsProvider,
 } from './providers/client-slots.ts'
-import { createTranspileProvider } from './providers/transpile.ts'
 import {
   createPackageInventoryProvider, type PluginInventoryFace, type PluginManagerFace,
 } from './providers/package-inventory.ts'
@@ -214,7 +213,35 @@ function installModulesPaths(): string[] {
       profileRootsNote += ` → scan failed: ${(error as Error).message}`
     }
   }
-  return roots
+  return uniquePaths(roots)
+}
+
+/**
+ * Absolute paths with path-spelling duplicates removed (directory identity, not text).
+ *
+ * The same `node_modules` is reachable through several spellings on a phone Host — a
+ * `require.resolve` answer, the running entry point, and a profile's own symlink — and
+ * scanning it twice would discover every client half twice. Realpath is the identity
+ * key; a path that cannot be resolved keeps its literal spelling, because the scanners
+ * already treat an unreadable root as "no bundles" and dropping it would hide a UI.
+ * @param paths absolute directories, authoritative first.
+ * @returns the distinct directories, in the same order.
+ */
+function uniquePaths(paths: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const path of paths) {
+    let key = path
+    try {
+      key = realpathSync(path)
+    } catch {
+      // Keep the literal path; resolution failing says nothing about readability.
+    }
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(path)
+  }
+  return unique
 }
 
 /** Why the profile roots look the way they do; surfaced as an assembly warning. */
@@ -296,21 +323,6 @@ function assembleProviders(
         // A composition without an event bus simply never notifies the plugin.
       }
     },
-  }))
-
-  // The static-first component tree: reading a bundle's text never runs plugin
-  // code, so this provider answers on a phone Host where `clientBundleScan`
-  // stays off. Same RenderNode model as `render-tree`; one client renderer eats both.
-  registry.add(createTranspileProvider({
-    clientRoots: () => roots,
-    budget: {
-      maxSourceBytes: 8 * 1024 * 1024,
-      maxDepth: config.maxRenderDepth,
-      maxNodes: config.maxRenderNodes,
-    },
-    // The bundle carries its own copy dictionary; the configured tags pick
-    // which one `t(key)` text resolves through.
-    localeTags: config.localeTags,
   }))
 
   registry.add(createHostSlotsProvider({
@@ -500,9 +512,8 @@ export { createBridgeHandler, writeReply } from './handler.ts'
 export { evaluateBundleSource } from './slots/evaluate.ts'
 export { createReactStub } from './slots/react-stub.ts'
 export { renderComponent, treeToSvg } from './slots/render-tree.ts'
-export { analyzeBundle, buildComponentTree, DEFAULT_TRANSPILE_BUDGET } from './slots/transpile.ts'
-export type { TranspiledBundle, TranspiledComponent, TranspiledRegistration, TranspiledTree, TranspileBudget } from './slots/transpile.ts'
-export { createTranspileProvider } from './providers/transpile.ts'
+export { bundleDictionaries, chooseBundleDictionary, resolveDictionaryKey, decodeEscapes } from './slots/bundle-locale.ts'
+export type { BundleDictionary } from './slots/bundle-locale.ts'
 
 /** Read this package's own version, for a standalone carrier's manifest. */
 export function packageVersion(): string {

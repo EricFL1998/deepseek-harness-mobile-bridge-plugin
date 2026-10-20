@@ -18,12 +18,6 @@
         "readOnly": true
       },
       {
-        "id": "transpile",
-        "version": 1,
-        "capabilities": ["component-tree", "bundles"],
-        "readOnly": true
-      },
-      {
         "id": "package-inventory",
         "version": 1,
         "capabilities": ["bundles", "rows", "meta-icon"],
@@ -100,21 +94,6 @@
         }
       ]
     }
-  },
-  "componentTree": {
-    "componentId": "dsh-plugin-subscription-oauth#subscription",
-    "tree": {
-      "kind": "element",
-      "type": "div",
-      "key": null,
-      "props": { "className": "sub-card" },
-      "children": [
-        { "kind": "element", "type": "h3", "key": null, "props": {}, "children": [{ "kind": "opaque", "reason": "prop:title" }] },
-        { "kind": "element", "type": "button", "key": null, "props": {}, "children": [{ "kind": "text", "value": "登录" }] }
-      ]
-    },
-    "warnings": [],
-    "truncated": false
   },
   "iconSvg": {
     "componentId": "agent-loop",

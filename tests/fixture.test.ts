@@ -38,16 +38,16 @@ test('the fixture manifest names exactly the providers this package registers', 
   const shared = fixture()
   if (shared === undefined) return
   const manifest = shared.manifest as { providers: { id: string; version: number; capabilities: string[] }[] }
-  // The four ids and their capability names are the contract; the order is the
-  // registration order the plugin documents.
+  // The ids and their capability names are the contract; the order is the
+  // registration order the plugin documents. The transpile provider was retired:
+  // the component-tree it served moved to the plugin's full Web UI.
   assert.deepEqual(manifest.providers.map(provider => provider.id), [
-    'client-assets', 'client-slots', 'transpile', 'package-inventory', 'rpc',
+    'client-assets', 'client-slots', 'package-inventory', 'rpc',
   ])
   assert.deepEqual(manifest.providers[0]!.capabilities, ['boot-graph', 'module-source', 'locale'])
   assert.deepEqual(manifest.providers[1]!.capabilities, ['list', 'describe', 'render-tree', 'icon-svg', 'dispatch'])
-  assert.deepEqual(manifest.providers[2]!.capabilities, ['component-tree', 'bundles'])
-  assert.deepEqual(manifest.providers[3]!.capabilities, ['bundles', 'rows', 'meta-icon'])
-  assert.deepEqual(manifest.providers[4]!.capabilities, ['invoke'])
+  assert.deepEqual(manifest.providers[2]!.capabilities, ['bundles', 'rows', 'meta-icon'])
+  assert.deepEqual(manifest.providers[3]!.capabilities, ['invoke'])
   for (const provider of manifest.providers) assert.equal(provider.version, 1)
 })
 

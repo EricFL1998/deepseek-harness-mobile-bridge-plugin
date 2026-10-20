@@ -5,11 +5,11 @@
 
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createClientAssetsProvider } from '../src/providers/client-assets.ts'
-import { createClientSlotsProvider } from '../src/providers/client-slots.ts'
+import { createClientSlotsProvider, dedupeRegistrations } from '../src/providers/client-slots.ts'
 import { createHostSlotsProvider } from '../src/providers/host-slots.ts'
 import { createPackageInventoryProvider } from '../src/providers/package-inventory.ts'
 import { createRpcProvider } from '../src/providers/rpc.ts'
@@ -17,7 +17,6 @@ import { BridgeFailure, type WarningSink } from '../src/protocol/provider.ts'
 import { createEchoGateway, createFixtureComposition } from './fixtures.ts'
 import { createEventQueue } from '../src/events.ts'
 import { createEventsProvider } from '../src/providers/events.ts'
-import { createTranspileProvider } from '../src/providers/transpile.ts'
 
 /** A warning sink that records what a provider reported. */
 function sink(): WarningSink & { readonly messages: string[] } {
@@ -532,6 +531,218 @@ test('rpc/invoke refuses a result above the byte ceiling', async () => {
   )
 })
 
+/**
+ * A compiled client bundle whose label is a thunk over the copy tables it ships.
+ *
+ * This is the shape the real subscription plugin uses (`label: () => t("nav")` +
+ * `ctx.locale.register(NS, { zh, en })`), with no `locale/` directory on disk.
+ */
+const INLINE_LOCALE_BUNDLE = `(() => { window.__ModuleLoader__.load({ id: '@deepseek-ai/dsh-client-labelled#lib/client.js', factory: (require) => {
+var jsx = require('react/jsx-runtime').jsx;
+const en = { nav: 'Subscriptions', intro: 'i', connect: 'Connect', edit: 'Edit', cancel: 'Cancel', close: 'Close' };
+const zh = { nav: '订阅', intro: 'i', connect: '连接', edit: '编辑', cancel: '取消', close: '关闭' };
+function Section() { return jsx('div', {}); }
+return { apply(ctx) {
+  ctx.locale.register('settings.subscriptions', { zh, en });
+  const t = ctx.locale.bind('settings.subscriptions');
+  ctx.slots.register({ name: 'settings.section', id: 'subscriptions', order: 92, label: () => t('nav') }, Section);
+  ctx.slots.register({ name: 'conversation.composer.dock', id: 'subscription-usage', order: 10 }, Section);
+} };
+} }); })();`
+
+/** One registration row as the wire carries it. */
+interface LabelledRow {
+  id?: string
+  label?: string
+  labelKey?: string
+  origin?: string
+  package?: string
+  render?: { componentId: string }
+}
+
+/** A `client-slots` provider over one bundle on disk, never executing it. */
+async function labelledSlots(): Promise<{ provider: ReturnType<typeof createClientSlotsProvider>; root: string }> {
+  const fixture = await createFixtureComposition({
+    bundleSource: INLINE_LOCALE_BUNDLE,
+    bundleId: '@deepseek-ai/dsh-client-labelled',
+  })
+  cleanup.push(() => rm(fixture.root, { recursive: true, force: true }))
+  const provider = createClientSlotsProvider({
+    // No composed entry graph: the static read is the phone's only source.
+    clientModules: () => undefined,
+    entryIds: [],
+    renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
+    maxIconSize: 256,
+    iconViewBox: '0 0 24 24',
+    clientRoots: () => [join(fixture.root, 'node_modules')],
+    // The Host's own preference: English. A request may override it.
+    localeTags: ['en'],
+  })
+  return { provider, root: fixture.root }
+}
+
+test('client-slots/list resolves a thunk label from the bundle inline dictionaries', async () => {
+  const { provider } = await labelledSlots()
+  const list = async (args: Record<string, unknown> = {}): Promise<LabelledRow[]> => {
+    const data = await provider.ops.list!({ slot: 'settings.section', ...args }, sink()) as {
+      registrations: LabelledRow[]
+    }
+    return data.registrations
+  }
+
+  const zh = await list({ locale: 'zh-Hans-CN' })
+  assert.deepEqual(zh.map(({ id, label, labelKey }) => ({ id, label, labelKey })), [
+    // The registration id is unchanged; only the label is localized.
+    { id: 'subscriptions', label: '订阅', labelKey: 'nav' },
+  ])
+  assert.equal(zh[0]!.origin, 'static')
+  assert.equal(zh[0]!.package, '@deepseek-ai/dsh-client-labelled')
+
+  const en = await list({ locale: 'en-US' })
+  assert.equal(en[0]!.label, 'Subscriptions')
+
+  // No `locale` arg: the Host's configured tags decide.
+  const hostDefault = await list()
+  assert.equal(hostDefault[0]!.label, 'Subscriptions')
+
+  // The second registration declares no label at all. This fixture package ships a
+  // `locale/<tag>.json`, whose `meta.title` is the documented last resort; a package
+  // without one (the real subscription plugin) keeps the id instead.
+  const chip = await provider.ops.list!({ slot: 'conversation.composer.dock' }, sink()) as {
+    registrations: LabelledRow[]
+  }
+  assert.deepEqual(chip.registrations.map(({ id, label }) => ({ id, label })), [
+    { id: 'subscription-usage', label: 'Sample plugin' },
+  ])
+})
+
+test('client-slots/describe resolves the same label for a requested locale', async () => {
+  const { provider } = await labelledSlots()
+  const zh = await provider.ops.describe!(
+    { slot: 'settings.section', id: 'subscriptions', locale: 'zh' },
+    sink(),
+  ) as LabelledRow
+  assert.equal(zh.label, '订阅')
+  assert.equal(zh.labelKey, 'nav')
+  const en = await provider.ops.describe!(
+    { slot: 'settings.section', id: 'subscriptions', locale: 'en' },
+    sink(),
+  ) as LabelledRow
+  assert.equal(en.label, 'Subscriptions')
+  // A malformed locale is refused rather than silently ignored.
+  await assert.rejects(
+    async () => provider.ops.describe!(
+      { slot: 'settings.section', id: 'subscriptions', locale: 'zh CN' },
+      sink(),
+    ),
+    (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
+  )
+})
+
+/** Stage the labelled bundle under `<root>/<package>/lib/client.js` plus its manifest. */
+async function stageLabelledBundle(root: string, packageName = 'dsh-plugin-labelled'): Promise<void> {
+  const dir = join(root, 'node_modules', packageName)
+  await mkdir(join(dir, 'lib'), { recursive: true })
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ name: packageName, dsh: { client: {} } }), 'utf8')
+  await writeFile(join(dir, 'lib', 'client.js'), INLINE_LOCALE_BUNDLE, 'utf8')
+}
+
+/** A provider over several roots, as the phone Host locates its `node_modules`. */
+function providerOverRoots(roots: readonly string[]): ReturnType<typeof createClientSlotsProvider> {
+  return createClientSlotsProvider({
+    clientModules: () => undefined,
+    entryIds: [],
+    renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
+    maxIconSize: 256,
+    iconViewBox: '0 0 24 24',
+    clientRoots: () => [...roots],
+    localeTags: ['en'],
+  })
+}
+
+test('dedupeRegistrations keeps one row per contribution identity, first occurrence wins', () => {
+  const rows = [
+    { slot: 'settings.section', id: 'subscriptions', package: 'pkg', label: '订阅', labelKey: 'nav' },
+    // The same contribution found through another root.
+    { slot: 'settings.section', id: 'subscriptions', package: 'pkg', label: 'Subscriptions', labelKey: 'nav' },
+    // A different package's same id is a different contribution.
+    { slot: 'settings.section', id: 'subscriptions', package: 'other-pkg' },
+    // A keyed slot identifies by its key when it has no id.
+    { slot: 'plugins.item', key: 'archive-sessions', package: 'archive-plugin' },
+    { slot: 'plugins.item', key: 'archive-sessions', package: 'archive-plugin', label: '归档会话' },
+    // An id is a separate identity from a key, so this one is kept.
+    { slot: 'plugins.item', id: 'archived-sessions', package: 'archive-plugin' },
+  ]
+  const unique = dedupeRegistrations(rows)
+  assert.deepEqual(
+    unique.map(row => `${row.slot}|${row.id ?? row.key ?? ''}|${row.package}`),
+    [
+      'settings.section|subscriptions|pkg',
+      'settings.section|subscriptions|other-pkg',
+      'plugins.item|archive-sessions|archive-plugin',
+      'plugins.item|archived-sessions|archive-plugin',
+    ],
+  )
+  // The install-first copy supplies the row, including its localized label.
+  assert.equal(unique[0]!.label, '订阅')
+})
+
+test('client-slots/list returns one row per contribution when two roots hold the same bundle', async () => {
+  const first = await mkdtemp(join(tmpdir(), 'bridge-roots-a-'))
+  const second = await mkdtemp(join(tmpdir(), 'bridge-roots-b-'))
+  cleanup.push(() => rm(first, { recursive: true, force: true }))
+  cleanup.push(() => rm(second, { recursive: true, force: true }))
+  await stageLabelledBundle(first)
+  await stageLabelledBundle(second)
+  const provider = providerOverRoots([join(first, 'node_modules'), join(second, 'node_modules')])
+
+  const sections = await provider.ops.list!({ slot: 'settings.section', locale: 'zh-Hans-CN' }, sink()) as {
+    registrations: LabelledRow[]
+  }
+  // This is the deployed bug: the phone listed "归档会话" three times because every
+  // contribution arrived once per root.
+  assert.equal(sections.registrations.length, 1)
+  assert.equal(sections.registrations[0]!.label, '订阅')
+
+  // Every contribution in the bundle appears exactly once, not once per root.
+  const all = await provider.ops.list!({}, sink()) as { registrations: LabelledRow[] }
+  assert.deepEqual(
+    all.registrations.map(row => `${row.slot}/${row.id ?? ''}`),
+    ['conversation.composer.dock/subscription-usage', 'settings.section/subscriptions'],
+  )
+})
+
+test('client-slots/list collapses a bundle reached through a symlinked root', async (t) => {
+  const first = await mkdtemp(join(tmpdir(), 'bridge-link-a-'))
+  const second = await mkdtemp(join(tmpdir(), 'bridge-link-b-'))
+  cleanup.push(() => rm(first, { recursive: true, force: true }))
+  await stageLabelledBundle(first)
+  const linkedModules = join(second, 'node_modules')
+  const linkedPackage = join(linkedModules, 'dsh-plugin-labelled')
+  await mkdir(linkedModules, { recursive: true })
+  cleanup.push(async () => {
+    // Unlink first: a recursive remove that walks through the link would touch the
+    // authoritative copy.
+    await rm(linkedPackage, { force: true })
+    await rm(second, { recursive: true, force: true })
+  })
+  try {
+    // A junction needs no elevation on Windows; POSIX ignores the type argument.
+    await symlink(join(first, 'node_modules', 'dsh-plugin-labelled'), linkedPackage, 'junction')
+  } catch (error) {
+    // A sandbox that forbids links cannot reproduce this shape; the two-roots test
+    // above still covers the identity dedupe that is mandatory either way.
+    t.skip(`symlinks unavailable: ${(error as Error).message}`)
+    return
+  }
+  const provider = providerOverRoots([join(first, 'node_modules'), linkedModules])
+  const all = await provider.ops.list!({ slot: 'settings.section' }, sink()) as {
+    registrations: LabelledRow[]
+  }
+  assert.equal(all.registrations.length, 1)
+  assert.equal(all.registrations[0]!.id, 'subscriptions')
+})
+
 test('client-slots/list falls back to the official roster when the graph composes nothing', async () => {
   // A prebuilt web client composes no entry graph, so plugins.item would be empty
   // even though the page has an Official group. The roster's text comes from the
@@ -653,60 +864,6 @@ test('events drain delivers each toast once and keeps only the newest few', asyn
   assert.equal(first.events.at(-1)!.text, 'm19')
   const second = await provider.ops.pending!({}, sink()) as { events: unknown[] }
   assert.deepEqual(second.events, [])
-})
-
-test('transpile/component-tree builds the tree of a bundle on disk', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-bridge-transpile-'))
-  cleanup.push(() => rm(root, { recursive: true, force: true }))
-  const dir = join(root, 'sample-plugin', 'lib')
-  await mkdir(dir, { recursive: true })
-  await writeFile(join(dir, 'client.js'), `(() => { window.__ModuleLoader__.load({ id: 'sample-plugin#lib/client.js', factory: (require) => {
-var jsx = require('react/jsx-runtime').jsx, jsxs = require('react/jsx-runtime').jsxs;
-function SampleCard({ title }) {
-  return jsxs('div', { className: 'card', children: [
-    jsx('h2', { children: title }),
-    jsx('button', { onClick: 'login', children: 'Log in' }),
-  ] });
-}
-return { apply(ctx) {
-  ctx.effect(() => ctx.slots.register({ name: 'settings.section', id: 'sample-page', order: 3 }, SampleCard));
-} };
-} }); })();`)
-  const provider = createTranspileProvider({ clientRoots: () => [root] })
-  const data = await provider.ops['component-tree']!(
-    { componentId: 'sample-plugin#sample-page', props: { title: 'Subscription' } },
-    sink(),
-  ) as { componentId: string; tree: Record<string, unknown>; truncated: boolean }
-  assert.equal(data.componentId, 'sample-plugin#sample-page')
-  assert.equal(data.truncated, false)
-  assert.partialDeepStrictEqual(data.tree, {
-    kind: 'element',
-    type: 'div',
-    props: { className: 'card' },
-    children: [
-      { kind: 'element', type: 'h2', children: [{ kind: 'text', value: 'Subscription' }] },
-      { kind: 'element', type: 'button', children: [{ kind: 'text', value: 'Log in' }] },
-    ],
-  })
-})
-
-test('transpile/component-tree fails with its known ids for an unknown component', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-bridge-transpile-'))
-  cleanup.push(() => rm(root, { recursive: true, force: true }))
-  const dir = join(root, 'sample-plugin', 'lib')
-  await mkdir(dir, { recursive: true })
-  await writeFile(join(dir, 'client.js'), `(() => { window.__ModuleLoader__.load({ id: 'x', factory: () => ({ apply(ctx) {
-  ctx.slots.register({ name: 'settings.section', id: 'known-page' }, () => null);
-} }) }); })();`)
-  const provider = createTranspileProvider({ clientRoots: () => [root] })
-  await assert.rejects(
-    async () => provider.ops['component-tree']!({ componentId: 'sample-plugin#absent' }, sink()),
-    (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
-  )
-  await assert.rejects(
-    async () => provider.ops['component-tree']!({ componentId: 'no-package#absent' }, sink()),
-    (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
-  )
 })
 
 test('client-slots/dispatch re-broadcasts the event and queues a refresh', async () => {

@@ -98,7 +98,7 @@ Nested groups are flattened to dotted keys. An unavailable `locale` falls back t
 
 ## `client-slots` (version 1)
 
-### `list { slot? }`
+### `list { slot?, locale? }`
 
 ```json
 {
@@ -119,9 +119,33 @@ entry id whose bundle registered it. `render.kind` is `component` or `factory`.
 without running it, or `evaluated` when the VM captured the call; older
 bridges omit it, and a client treats that as unknown.
 
-### `describe { slot, id }`
+A contribution appears once. A phone Host locates its `node_modules` through
+several path spellings (a `require.resolve` answer, the running entry point, and
+a profile's own symlink), so the same bundle can be discovered through more than
+one root; the rows are deduplicated by
+`<slot>|<id-or-key>|<package>` and the first (install-first) copy wins. Without
+this, one plugin's `settings.section` entry would be listed once per root.
 
-One `registrations[]` entry, or `args/invalid`.
+`locale` is an optional BCP-47 tag (`zh-Hans-CN`, `en-US`, …) naming the
+language the client renders in. Tags are tried in this order: the requested
+tag, its base language (`zh-Hans-CN` → `zh`), then the Host's configured
+`localeTags`. The Host caches labels per bundle revision and tag preference, so
+one client asking for Chinese and another for English both get their own text
+from the same request path. Omitting `locale` uses the Host's tags; a value that
+is not a language tag (or is not a string) is `args/invalid`.
+
+A registration's label comes from, in order: the literal the bundle wrote
+(`label: "Subscriptions"`); the copy table the bundle ships inline, resolved
+through the key its thunk names (`label: () => t("nav")`); then the package's
+own `locale/<tag>.json`. When a bundle localizes its label this way the response
+also carries `labelKey` (`"nav"`), so a client can tell a resolved translation
+from a literal. A registration none of those sources names keeps no `label`, and
+the client shows its id instead of inventing a name.
+
+### `describe { slot, id, locale? }`
+
+One `registrations[]` entry, or `args/invalid`. `locale` resolves the label the
+same way `list` does.
 
 ### `render-tree { componentId, props? }`
 
@@ -170,61 +194,6 @@ dropped with a warning). The bridge re-broadcasts it on the Host event bus as
 `ui/<componentId>/<event>` and queues a `client/refresh` transient message
 (`events/pending`), so the client re-pulls the component tree once the plugin
 has reacted. A composition without an event bus still answers `ok` and warns.
-
-## `transpile` (version 1)
-
-The static-first component tree: the bundle's text is analyzed — never
-executed — so this provider answers on a Host where `clientBundleScan` stays
-off. The tree uses the same `RenderNode` model as `render-tree`; a client
-needs one renderer for both.
-
-### `component-tree { componentId, props? }`
-
-```json
-{
-  "componentId": "dsh-plugin-subscription-oauth#subscription",
-  "tree": { "kind": "element", "type": "div", "key": null, "props": {}, "children": [ … ] },
-  "warnings": [],
-  "truncated": false
-}
-```
-
-- `componentId` is `<package>#<id>`: the package that ships `lib/client.js`,
-  and either a registration id (resolved to the component it registered) or
-  the component's own source name.
-- `props` resolves expressions that read the component's own props
-  (destructured names and `props.<name>` member reads). A minified bundle that
-  renames a destructured binding (`{title:e}`) still resolves: the binding
-  falls back to the property name at the same position, which minification
-  preserves. A prop the request did not supply becomes
-  `{ "kind": "opaque", "reason": "prop:<name>" }` — dynamic data the plugin
-  controls at runtime, not a resolution failure.
-- Text resolves through the copy dictionary the bundle carries. A client bundle
-  declares its locale tables inline (`const en = { nav: 'Subscriptions', … }`)
-  and reads them through a helper (`t('nav')`); the static pass finds those
-  tables, picks the one matching the Host's `localeTags` (first tag wins, then
-  `en`, then the widest table), and turns `t('key')` into a `text` node.
-  Placeholders (`{count}`) are filled from a statically-visible params object; a
-  dynamic one stays as the placeholder text. A key the table lacks becomes
-  `{ "kind": "opaque", "reason": "untranslated:<key>" }`.
-- Everything the static pass cannot resolve (calls, state, spreads, computed
-  members) becomes an `opaque` node with its reason; nothing is guessed.
-- `truncated: true` means a depth/node budget stopped the walk; the tree is a
-  prefix and the client shows a "content truncated" notice.
-- Unknown package or component ids fail `args/invalid` with
-  `details.known` naming the ids this bundle offers; an unknown package also
-  names `details.roots` and `details.packages`, i.e. what the scan saw.
-
-### `bundles`
-
-```json
-{ "roots": ["/root/.dsh/profiles/web/node_modules"], "packages": ["dsh-plugin-subscription-oauth", "…"] }
-```
-
-The diagnostic counterpart of `component-tree`: it reports the directories the
-static scan walks and every package under them that ships a `lib/client.js`.
-When a plugin's UI does not appear, this answer separates "not installed" from
-"scanned in the wrong place" without a second round trip.
 
 ## `package-inventory` (version 1)
 

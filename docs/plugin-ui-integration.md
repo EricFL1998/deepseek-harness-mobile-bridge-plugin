@@ -26,6 +26,10 @@
 只要你按既有方式在 `apply` 里 `ctx.slots.register({ name: 'settings.section', id, label, inject }, Component)`，
 App 就能发现它：bridge 会读取你包里的客户端 bundle。
 
+`label` 写成字面量（`label: "订阅"`）或 thunk（`label: () => t('nav')`）都可以。
+thunk 形式不需要 `locale/` 目录：bridge 会从你 bundle 里自带的 `zh`/`en` 词典
+按手机当前语言解析 `nav`，客户端也可以在每个请求里用 `locale` 指定语言。
+
 ---
 
 ## 2. 渲染是怎么做出来的（你能预期到什么）
