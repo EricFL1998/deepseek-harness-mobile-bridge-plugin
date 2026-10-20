@@ -199,12 +199,32 @@ needs one renderer for both.
   preserves. A prop the request did not supply becomes
   `{ "kind": "opaque", "reason": "prop:<name>" }` — dynamic data the plugin
   controls at runtime, not a resolution failure.
+- Text resolves through the copy dictionary the bundle carries. A client bundle
+  declares its locale tables inline (`const en = { nav: 'Subscriptions', … }`)
+  and reads them through a helper (`t('nav')`); the static pass finds those
+  tables, picks the one matching the Host's `localeTags` (first tag wins, then
+  `en`, then the widest table), and turns `t('key')` into a `text` node.
+  Placeholders (`{count}`) are filled from a statically-visible params object; a
+  dynamic one stays as the placeholder text. A key the table lacks becomes
+  `{ "kind": "opaque", "reason": "untranslated:<key>" }`.
 - Everything the static pass cannot resolve (calls, state, spreads, computed
   members) becomes an `opaque` node with its reason; nothing is guessed.
 - `truncated: true` means a depth/node budget stopped the walk; the tree is a
   prefix and the client shows a "content truncated" notice.
 - Unknown package or component ids fail `args/invalid` with
-  `details.known` naming the ids this bundle offers.
+  `details.known` naming the ids this bundle offers; an unknown package also
+  names `details.roots` and `details.packages`, i.e. what the scan saw.
+
+### `bundles`
+
+```json
+{ "roots": ["/root/.dsh/profiles/web/node_modules"], "packages": ["dsh-plugin-subscription-oauth", "…"] }
+```
+
+The diagnostic counterpart of `component-tree`: it reports the directories the
+static scan walks and every package under them that ships a `lib/client.js`.
+When a plugin's UI does not appear, this answer separates "not installed" from
+"scanned in the wrong place" without a second round trip.
 
 ## `package-inventory` (version 1)
 

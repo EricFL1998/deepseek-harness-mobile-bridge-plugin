@@ -32,6 +32,12 @@ export interface TranspileOptions {
   readonly clientRoots: () => readonly string[]
   /** Ceilings applied to one parse/render. */
   readonly budget?: TranspileBudget
+  /**
+   * Preferred language tags for the bundle's own copy dictionary, most
+   * preferred first. `t('key')` text resolves through the first tag the bundle
+   * carries, so a card arrives in the language the client asked for.
+   */
+  readonly localeTags?: readonly string[]
 }
 
 /** One bundle on disk that declares at least one component. */
@@ -149,7 +155,7 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
             known: [...bundle.registrationComponents.keys(), ...bundle.componentNames].sort(),
           })
         }
-        const built = buildComponentTree(bundle.source, componentName, props, budget)
+        const built = buildComponentTree(bundle.source, componentName, props, budget, options.localeTags ?? [])
         for (const note of built.warnings) warnings.warn(note)
         return {
           componentId,

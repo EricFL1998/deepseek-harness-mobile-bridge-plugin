@@ -289,6 +289,9 @@ function assembleProviders(
       maxDepth: config.maxRenderDepth,
       maxNodes: config.maxRenderNodes,
     },
+    // The bundle carries its own copy dictionary; the configured tags pick
+    // which one `t(key)` text resolves through.
+    localeTags: config.localeTags,
   }))
 
   registry.add(createHostSlotsProvider({

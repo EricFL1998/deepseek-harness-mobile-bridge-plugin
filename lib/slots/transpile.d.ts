@@ -138,7 +138,9 @@ export declare function bundleSourceDigest(source: string): string;
  * @param componentName - source-level component name.
  * @param props - JSON-safe props from the request.
  * @param budget - ceilings for the build.
+ * @param localeTags - preferred language tags, most preferred first. The first
+ *   one naming a dictionary the bundle carries decides `t(key)` text.
  * @returns the tree, its warnings, and whether a budget stopped the walk.
  */
-export declare function buildComponentTree(source: string, componentName: string, props: Readonly<Record<string, unknown>>, budget?: TranspileBudget): TranspiledTree;
+export declare function buildComponentTree(source: string, componentName: string, props: Readonly<Record<string, unknown>>, budget?: TranspileBudget, localeTags?: readonly string[]): TranspiledTree;
 export {};

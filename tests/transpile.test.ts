@@ -214,6 +214,76 @@ describe('buildComponentTree', () => {
     })
   })
 
+  it('resolves t(key) through the dictionary the bundle carries', () => {
+    const source = bundle(`
+      var en = { nav: 'Subscriptions', intro: 'Sign in with a subscription.', connect: 'Connect',
+                 edit: 'Edit', cancel: 'Cancel', close: 'Close', logout: 'Sign out' };
+      function Section() {
+        return jsxs('section', { children: [
+          jsx('h2', { children: t('nav') }),
+          jsx('p', { children: t('intro') }),
+          jsx('button', { children: t('connect') }),
+        ] });
+      }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Section', {}, DEFAULT_TRANSPILE_BUDGET, ['en'])
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'section',
+      children: [
+        { kind: 'element', type: 'h2', children: [{ kind: 'text', value: 'Subscriptions' }] },
+        { kind: 'element', type: 'p', children: [{ kind: 'text', value: 'Sign in with a subscription.' }] },
+        { kind: 'element', type: 'button', children: [{ kind: 'text', value: 'Connect' }] },
+      ],
+    })
+  })
+
+  it('fills {placeholders} from static params and keeps dynamic ones', () => {
+    const source = bundle(`
+      var en = { a: 'Connected · {count} account(s)', b: 'expires {time}', c: 'x',
+                 d: 'x', e: 'x', f: 'x' };
+      function Status() {
+        return jsx('span', { children: t('a', { count: 3 }) });
+      }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Status', {}, DEFAULT_TRANSPILE_BUDGET, ['en'])
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'span',
+      children: [{ kind: 'text', value: 'Connected · 3 account(s)' }],
+    })
+  })
+
+  it('prefers the locale tag the client asked for', () => {
+    const source = bundle(`
+      var en = { nav: 'Subscriptions', a: 'x', b: 'x', c: 'x', d: 'x', e: 'x' };
+      var zh = { nav: '订阅', a: 'x', b: 'x', c: 'x', d: 'x', e: 'x' };
+      function Section() { return jsx('h2', { children: t('nav') }); }
+      return { apply() {} };
+    `)
+    const zhTree = buildComponentTree(source, 'Section', {}, DEFAULT_TRANSPILE_BUDGET, ['zh'])
+    assert.partialDeepStrictEqual(zhTree.tree as Record<string, unknown>, {
+      kind: 'element', type: 'h2', children: [{ kind: 'text', value: '订阅' }],
+    })
+    const enTree = buildComponentTree(source, 'Section', {}, DEFAULT_TRANSPILE_BUDGET, ['en'])
+    assert.partialDeepStrictEqual(enTree.tree as Record<string, unknown>, {
+      kind: 'element', type: 'h2', children: [{ kind: 'text', value: 'Subscriptions' }],
+    })
+  })
+
+  it('reports a key the dictionary does not carry', () => {
+    const source = bundle(`
+      var en = { nav: 'Subscriptions', a: 'x', b: 'x', c: 'x', d: 'x', e: 'x' };
+      function Missing() { return jsx('span', { children: t('absentKey') }); }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Missing', {}, DEFAULT_TRANSPILE_BUDGET, ['en'])
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'span',
+      children: [{ kind: 'opaque', reason: 'untranslated:absentKey' }],
+    })
+  })
+
   it('returns null with a warning for an unknown component', () => {
     const source = bundle(`return { apply() {} };`)
     const built = buildComponentTree(source, 'Missing', {})
