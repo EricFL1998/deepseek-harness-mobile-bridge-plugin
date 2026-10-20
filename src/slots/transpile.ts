@@ -776,15 +776,24 @@ function readParams(
   }
 }
 
-/** First top-level `return` inside one block, or -1. Nested functions do not count. */
+/**
+ * The `return` whose expression is the component's main render, or -1.
+ *
+ * A component commonly opens with early returns for empty/loading/error states
+ * and returns the real layout last. Taking the *first* return therefore
+ * produces a nearly empty tree for exactly the components worth rendering, so
+ * the widest top-level return wins: among several branches, the main render is
+ * the one carrying the most structure. Ties keep the earlier (source) order.
+ */
 function findReturn(cursor: Cursor, start: number, close: number): number {
+  const candidates: number[] = []
   let depth = 0
   for (let at = start; at < close; at += 1) {
     const token = cursor.tokens[at]!
     if (token.kind === 'punct' && token.value === '{') depth += 1
     else if (token.kind === 'punct' && token.value === '}') depth -= 1
     else if (depth === 0 && token.kind === 'keyword' && token.value === 'return') {
-      return at + 1
+      candidates.push(at + 1)
     }
     // Nested function bodies are skipped entirely.
     if (token.kind === 'keyword' && token.value === 'function') {
@@ -799,7 +808,17 @@ function findReturn(cursor: Cursor, start: number, close: number): number {
       }
     }
   }
-  return -1
+  if (candidates.length === 0) return -1
+  let best = candidates[0]!
+  let bestWidth = -1
+  for (const candidate of candidates) {
+    const width = expressionEnd(cursor, candidate, close) - candidate
+    if (width > bestWidth) {
+      bestWidth = width
+      best = candidate
+    }
+  }
+  return best
 }
 
 /**

@@ -11,7 +11,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { existsSync, readdirSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -192,20 +192,32 @@ function installModulesPaths(): string[] {
   // node_modules. The Host serves a prebuilt web client (no clientModules
   // registry), so scanning these roots is the only way the phone can see the
   // slots an installed plugin registers.
+  //
+  // The path is added without an `existsSync` gate on purpose: inside proot a
+  // `stat` on a translated path can fail where the same directory is plainly
+  // readable through `readdir`, and the scanner already treats an absent root as
+  // "no bundles" — so a false negative here would silently hide every
+  // third-party plugin's UI, while a false positive costs one failed readdir.
   const home = process.env.DSH_HOME
+  profileRootsNote = home === undefined ? 'DSH_HOME is not set' : `DSH_HOME=${home}`
   if (home !== undefined) {
     const profilesDir = join(home, 'profiles')
     try {
-      for (const name of readdirSync(profilesDir)) {
-        const modules = join(profilesDir, name, 'node_modules')
-        if (existsSync(modules)) roots.push(modules)
-      }
-    } catch {
-      // No profiles directory: the installation roots already answered.
+      const names = readdirSync(profilesDir)
+      for (const name of names) roots.push(join(profilesDir, name, 'node_modules'))
+      profileRootsNote += ` → profiles=[${names.join(',')}] roots=${roots.length}`
+    } catch (error) {
+      // A profiles directory that cannot be read is reported, not silently
+      // skipped: without these roots a third-party plugin's UI is invisible,
+      // and "nothing registered" would look like "nothing installed".
+      profileRootsNote += ` → scan failed: ${(error as Error).message}`
     }
   }
   return roots
 }
+
+/** Why the profile roots look the way they do; surfaced as an assembly warning. */
+let profileRootsNote: string | undefined
 
 /**
  * Assemble the provider table from whatever the composition provides.
@@ -236,6 +248,7 @@ function assembleProviders(
   if (roots.length === 0) {
     warnings.push('client bundles: the Host installation could not be located on disk')
   }
+  if (profileRootsNote !== undefined) warnings.push(profileRootsNote)
 
   registry.add(createClientSlotsProvider({
     clientModules,

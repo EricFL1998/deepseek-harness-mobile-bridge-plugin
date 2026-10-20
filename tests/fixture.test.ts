@@ -45,7 +45,7 @@ test('the fixture manifest names exactly the providers this package registers', 
   ])
   assert.deepEqual(manifest.providers[0]!.capabilities, ['boot-graph', 'module-source', 'locale'])
   assert.deepEqual(manifest.providers[1]!.capabilities, ['list', 'describe', 'render-tree', 'icon-svg', 'dispatch'])
-  assert.deepEqual(manifest.providers[2]!.capabilities, ['component-tree'])
+  assert.deepEqual(manifest.providers[2]!.capabilities, ['component-tree', 'bundles'])
   assert.deepEqual(manifest.providers[3]!.capabilities, ['bundles', 'rows', 'meta-icon'])
   assert.deepEqual(manifest.providers[4]!.capabilities, ['invoke'])
   for (const provider of manifest.providers) assert.equal(provider.version, 1)

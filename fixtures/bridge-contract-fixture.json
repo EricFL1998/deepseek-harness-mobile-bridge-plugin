@@ -20,7 +20,7 @@
       {
         "id": "transpile",
         "version": 1,
-        "capabilities": ["component-tree"],
+        "capabilities": ["component-tree", "bundles"],
         "readOnly": true
       },
       {
