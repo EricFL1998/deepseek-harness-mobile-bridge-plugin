@@ -52,6 +52,8 @@ export interface ClientAssetsOptions {
     readonly localeTags: readonly string[];
     /** Resolve the client-modules service, or undefined when absent. */
     readonly clientModules: () => ClientModulesFace | undefined;
+    /** Loader row names mounted in this Host, for boot-graph diagnostics. */
+    readonly loaderRows?: () => readonly string[];
 }
 /**
  * Build the `client-assets` provider.

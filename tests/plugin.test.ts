@@ -155,7 +155,7 @@ test('the manifest route answers every provider with its honest availability', a
   assert.deepEqual(body.providers.map(provider => provider.id), [
     'client-assets', 'client-slots', 'transpile', 'host-slots', 'package-inventory', 'settings', 'events', 'rpc',
   ])
-  assert.deepEqual(body.providers[0]!.capabilities, ['boot-graph', 'module-source', 'locale'])
+  assert.deepEqual(body.providers[0]!.capabilities, ['boot-graph', 'loader-rows', 'module-source', 'locale'])
   assert.deepEqual(body.providers[1]!.capabilities, ['list', 'describe', 'render-tree', 'icon-svg', 'dispatch'])
   assert.deepEqual(body.providers[2]!.capabilities, ['component-tree', 'bundles'])
   assert.deepEqual(body.providers[3]!.capabilities, ['list'])

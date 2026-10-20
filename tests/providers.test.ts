@@ -249,6 +249,8 @@ test('client-slots/list captures registrations, labels, order, and package', asy
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    // These suites exercise the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
   })
   const data = await provider.ops.list!({}, sink()) as {
     registrations: Record<string, unknown>[]
@@ -300,6 +302,8 @@ test('client-slots/list narrows to one slot and names the slots it saw', async (
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    // These suites exercise the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
   })
   const data = await provider.ops.list!({ slot: 'sample.factory' }, sink()) as {
     slot: string
@@ -319,6 +323,8 @@ test('client-slots/describe returns one registration or fails', async () => {
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    // These suites exercise the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
   })
   const described = await provider.ops.describe!({ slot: 'plugins.item', id: 'sample-one' }, sink()) as {
     label: string
@@ -339,6 +345,8 @@ test('client-slots/render-tree serializes the component tree with props', async 
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    // These suites exercise the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
   })
   const data = await provider.ops['render-tree']!(
     { componentId: 'sample-one', props: { view: 'summary' } },
@@ -396,6 +404,8 @@ test('client-slots/render-tree reports an unknown component and its known ids', 
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    // These suites exercise the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
   })
   await assert.rejects(
     async () => provider.ops['render-tree']!({ componentId: 'absent' }, sink()),
@@ -416,6 +426,8 @@ test('client-slots/icon-svg converts artwork into one standalone document', asyn
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    // These suites exercise the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
   })
   const data = await provider.ops['icon-svg']!({ componentId: 'sample-factory', size: 32 }, sink()) as {
     size: number
@@ -462,6 +474,8 @@ window.__ModuleLoader__.load({ id: "broken-plugin", factory: () => ({
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    // These suites exercise the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
   })
   const data = await provider.ops.list!({}, warnings) as { registrations: unknown[] }
   assert.deepEqual(data.registrations, [])
@@ -577,6 +591,8 @@ test('client-slots/list prefers real registrations over the official roster', as
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
     installModules: () => fixture.root,
+    // This suite covers the execution path; the shipped phone default keeps it off.
+    executeBundles: true,
     localeTags: ['zh'],
   })
   const data = await provider.ops.list!({ slot: 'plugins.item' }, sink()) as {

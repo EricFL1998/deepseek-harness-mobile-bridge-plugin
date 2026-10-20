@@ -41,6 +41,7 @@ test('a phone client can negotiate and read the plugin catalog end to end', asyn
     renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
     maxIconSize: 256,
     iconViewBox: '0 0 24 24',
+    executeBundles: true,
   }))
   registry.add(createPackageInventoryProvider({
     pluginManager: () => fixture.pluginManager,

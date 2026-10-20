@@ -60,6 +60,8 @@ export interface ClientAssetsOptions {
   readonly localeTags: readonly string[]
   /** Resolve the client-modules service, or undefined when absent. */
   readonly clientModules: () => ClientModulesFace | undefined
+  /** Loader row names mounted in this Host, for boot-graph diagnostics. */
+  readonly loaderRows?: () => readonly string[]
 }
 
 /**
@@ -111,6 +113,9 @@ export function createClientAssetsProvider(options: ClientAssetsOptions): Provid
           })),
         }
       },
+
+      /** Report the loader rows the client scan had available. */
+      'loader-rows': (): { rows: readonly string[] } => ({ rows: options.loaderRows?.() ?? [] }),
 
       /** Return one entry's bundle bytes, bounded. */
       'module-source': async (args): Promise<ModuleSourceData> => {

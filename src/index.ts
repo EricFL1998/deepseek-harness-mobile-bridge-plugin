@@ -240,6 +240,17 @@ function assembleProviders(
     maxModuleBytes: config.maxModuleBytes,
     localeTags: config.localeTags,
     clientModules,
+    loaderRows: () => {
+      const loader = ctx.get('loader') as { entries?: () => Iterable<{ options?: { name?: string } }> } | undefined
+      const rows: string[] = []
+      if (loader?.entries !== undefined) {
+        for (const entry of loader.entries()) {
+          const name = entry?.options?.name
+          if (typeof name === 'string') rows.push(name)
+        }
+      }
+      return rows
+    },
   }))
 
   // A Host that serves a prebuilt web client only exposes slot declarations through
@@ -265,7 +276,10 @@ function assembleProviders(
     // the only place its real slot declarations can be read from.
     // Text is read for static extraction; execution stays behind its own switch.
     clientRoots: () => roots,
-    executeBundles: config.clientBundleScan,
+    // Evaluating client bundles runs plugin code inside the Host. On a phone Host
+    // that path has crashed the process for an official bundle, so execution stays
+    // off: the static transpiler reads the same declarations from bundle text.
+    executeBundles: false,
     localeTags: config.localeTags,
     // `dispatch` re-broadcasts a native UI event on the Host bus and queues a
     // refresh so the phone re-pulls the tree once the plugin has reacted.
