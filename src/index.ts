@@ -20,6 +20,7 @@ import type { HostConnection } from './host-services.ts'
 import { webServerOf } from './host-services.ts'
 import { createBridgeHandler, writeReply } from './handler.ts'
 import { createEventQueue } from './events.ts'
+import { MobileUiService } from './mobile-ui-service.ts'
 import { createEventsProvider } from './providers/events.ts'
 import { createSettingsProvider, type SettingsServiceFace } from './providers/settings.ts'
 import { ProviderRegistry } from './protocol/provider.ts'
@@ -229,6 +230,7 @@ function assembleProviders(
   ctx: Context,
   config: Config,
   events: ReturnType<typeof createEventQueue>,
+  mobileUi: MobileUiService,
 ): { registry: ProviderRegistry; warnings: string[] } {
   const registry = new ProviderRegistry()
   const warnings: string[] = []
@@ -281,6 +283,9 @@ function assembleProviders(
     // off: the static transpiler reads the same declarations from bundle text.
     executeBundles: false,
     localeTags: config.localeTags,
+    // A native control press runs the action the plugin's Host half registered;
+    // without a registration the event still reaches the plugin bus.
+    runAction: (componentId, actionId, payload) => mobileUi.runAction(componentId, actionId, payload),
     // `dispatch` re-broadcasts a native UI event on the Host bus and queues a
     // refresh so the phone re-pulls the tree once the plugin has reacted.
     notify: (kind, text) => { events.push(kind, text) },
@@ -375,7 +380,14 @@ export function apply(ctx: Context, config: Config): void {
     return
   }
   const events = createEventQueue()
-  const { registry, warnings } = assembleProviders(ctx, config, events)
+  const mobileUi = new MobileUiService()
+  // Publish the service so a plugin Host half can register what its native
+  // controls do (`ctx.get('mobileUi')`). A composition without a reflection
+  // layer (tests, minimal hosts) keeps the registry private.
+  if (typeof ctx.reflect?.provide === "function") {
+    ctx.effect(() => ctx.reflect.provide("mobileUi", mobileUi), "dsh-mobile-bridge: mobileUi service")
+  }
+  const { registry, warnings } = assembleProviders(ctx, config, events, mobileUi)
   const handler = createBridgeHandler({
     registry,
     pluginVersion: packageVersion,

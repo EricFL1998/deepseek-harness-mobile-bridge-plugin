@@ -53,6 +53,13 @@ export interface ClientSlotsOptions {
      * listens with `ctx.on` learns about the interaction.
      */
     readonly emit?: (event: string, payload: Readonly<Record<string, unknown>>) => void;
+    /**
+     * Run the action a native control reported, when the plugin registered one.
+     *
+     * A transpiled tree carries no onClick closure: the closure lives in the plugin's
+     * client half. The plugin's Host half registers actions through the mobileUi`n   * service, and dispatch calls them here before the generic bus event.
+     */
+    readonly runAction?: (componentId: string, actionId: string, payload: Readonly<Record<string, unknown>>) => Promise<boolean>;
 }
 /**
  * Build the `client-slots` provider.

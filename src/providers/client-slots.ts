@@ -81,6 +81,17 @@ export interface ClientSlotsOptions {
    * listens with `ctx.on` learns about the interaction.
    */
   readonly emit?: (event: string, payload: Readonly<Record<string, unknown>>) => void
+  /**
+   * Run the action a native control reported, when the plugin registered one.
+   *
+   * A transpiled tree carries no onClick closure: the closure lives in the plugin's
+   * client half. The plugin's Host half registers actions through the mobileUi`n   * service, and dispatch calls them here before the generic bus event.
+   */
+  readonly runAction?: (
+    componentId: string,
+    actionId: string,
+    payload: Readonly<Record<string, unknown>>,
+  ) => Promise<boolean>
 }
 
 /** One cached evaluation, keyed by entry id and bundle revision. */
@@ -446,6 +457,20 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
         const projected = projectJson(payload, 'payload')
         for (const path of projected.dropped) warnings.warn(`dropped payload member ${path}`)
         const body = (projected.value ?? {}) as Readonly<Record<string, unknown>>
+        // A registered action runs the plugin's own Host code first: that is what
+        // "the plugin's button was pressed" means when its browser half never runs.
+        const actionId = typeof body.actionId === 'string' ? body.actionId : ''
+        if (options.runAction !== undefined && actionId.length > 0) {
+          try {
+            const ran = await options.runAction(componentId, actionId, body)
+            if (ran) {
+              options.notify?.('client/refresh', componentId)
+              return { ok: true }
+            }
+          } catch (error) {
+            warnings.warn(`plugin action ${actionId} failed: ${(error as Error).message}`)
+          }
+        }
         if (options.emit !== undefined) {
           try {
             options.emit(`ui/${componentId}/${event}`, body)
