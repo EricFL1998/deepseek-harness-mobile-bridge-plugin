@@ -39,7 +39,7 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "release": true,
+  "release": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
