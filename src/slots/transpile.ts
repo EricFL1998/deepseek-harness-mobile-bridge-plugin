@@ -403,6 +403,10 @@ interface ComponentShape {
   /** Token index of the expression the component returns, or -1 when none. */
   readonly bodyStart: number
   readonly bodyEnd: number
+  /** Token index of the function body's `{`, or -1 for an expression-body arrow. */
+  readonly bodyOpen: number
+  /** Exclusive end of the body block, or -1 for an expression-body arrow. */
+  readonly bodyClose: number
   readonly offset: number
 }
 
@@ -428,6 +432,12 @@ interface BundleModel {
   dictionary?: Map<string, string>
   /** Binding name of {@link dictionary}; reported so a client knows the language. */
   dictionaryName?: string
+  /**
+   * Module-level `const` bindings whose initializer is plain JSON
+   * (`const styles = { … }`). Components read these freely; without them every
+   * `styles.name` is an opaque member read.
+   */
+  readonly globals: Map<string, unknown>
 }
 
 // ---------------------------------------------------------------------------
@@ -492,9 +502,11 @@ function buildModel(source: string, budget: TranspileBudget, warnings: string[])
     warnings,
     budget,
     dictionaries: new Map(),
+    globals: new Map(),
   }
   collectBindings(cursor, model)
   collectDictionaries(cursor, model)
+  collectGlobals(cursor, model)
   // Pass 1: bind function declarations and `const Name = …` component
   // initializers everywhere, so a `register(…, Component)` call and a JSX
   // `<Child/>` reference resolve no matter which appears first in the source.
@@ -574,17 +586,21 @@ function collectDictionaries(cursor: Cursor, model: BundleModel): void {
 }
 
 /**
- * Read one object literal as a flat string table, or undefined when it is not
- * flat (nested objects, computed values, spreads).
+ * Read one object literal as a flat string table.
+ *
+ * A real locale table is mostly `key: 'text'`, but it may also carry a nested
+ * group or a computed value. Those members are skipped rather than rejecting the
+ * whole table: dropping a dictionary because one entry is nested would silently
+ * turn every `t(key)` on the page into an opaque node.
  */
 function readStringTable(cursor: Cursor, openAt: number, closeAt: number): Map<string, string> | undefined {
   const table = new Map<string, string>()
   for (const [a, b] of splitTopLevel(cursor, openAt + 1, closeAt)) {
     const key = cursor.tokens[a]
-    if (key === undefined || (key.kind !== 'ident' && key.kind !== 'string')) return undefined
-    if (cursor.tokens[a + 1]?.kind !== 'punct' || cursor.tokens[a + 1]?.value !== ':') return undefined
+    if (key === undefined || (key.kind !== 'ident' && key.kind !== 'string')) continue
+    if (cursor.tokens[a + 1]?.kind !== 'punct' || cursor.tokens[a + 1]?.value !== ':') continue
     const value = cursor.tokens[a + 2]
-    if (b !== a + 3 || value === undefined || value.kind !== 'string') return undefined
+    if (b !== a + 3 || value === undefined || value.kind !== 'string') continue
     table.set(key.value, decodeEscapes(value.value))
   }
   return table.size === 0 ? undefined : table
@@ -629,6 +645,29 @@ function chooseDictionary(model: BundleModel, localeTags: readonly string[]): vo
   }
   model.dictionary = widest
   model.dictionaryName = widestName
+}
+
+/**
+ * Collect module-level `const NAME = { … }` / `= [ … ]` bindings that hold plain
+ * JSON. Components read style tables and constant lists this way; without them
+ * every `styles.name` read is opaque, and the client loses the styling and the
+ * static content alike.
+ */
+function collectGlobals(cursor: Cursor, model: BundleModel): void {
+  for (let at = 0; at < cursor.tokens.length - 3; at += 1) {
+    const keyword = cursor.tokens[at]!
+    if (keyword.kind !== 'keyword') continue
+    if (keyword.value !== 'const' && keyword.value !== 'let' && keyword.value !== 'var') continue
+    const name = cursor.tokens[at + 1]
+    if (name?.kind !== 'ident') continue
+    if (cursor.tokens[at + 2]?.value !== '=') continue
+    const open = cursor.tokens[at + 3]
+    if (open === undefined || open.kind !== 'punct') continue
+    if (open.value !== '{' && open.value !== '[') continue
+    const close = cursor.matchDelimiter(at + 3)
+    const value = readStaticValue(cursor, at + 3, close, model, emptyEnv())
+    if (value.t === 'value') model.globals.set(name.value, value.v)
+  }
 }
 
 /**
@@ -742,6 +781,8 @@ function readFunction(cursor: Cursor, functionAt: number, model: BundleModel): C
     paramIsIdentifier: props.identifier,
     bodyStart: returnAt,
     bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, bodyClose) : -1,
+    bodyOpen: bodyOpen ?? -1,
+    bodyClose,
     offset: nameToken.start,
   }
 }
@@ -786,16 +827,19 @@ function readFunctionLike(cursor: Cursor, nameToken: Token, initAt: number, mode
     if (cursor.tokens[at]?.value !== '(') return undefined
     const paramsClose = cursor.matchDelimiter(at) - 1
     if (cursor.tokens[paramsClose + 1]?.value !== '{') return undefined
-    const bodyClose = cursor.matchDelimiter(paramsClose + 1) - 1
+    const bodyOpen = paramsClose + 1
+    const bodyClose = cursor.matchDelimiter(bodyOpen) - 1
     const props = readParams(cursor, at + 1, paramsClose)
-    const returnAt = findReturn(cursor, paramsClose + 2, bodyClose)
+    const returnAt = findReturn(cursor, bodyOpen + 1, bodyClose)
     return {
       name: nameToken.value,
       paramProps: props.names,
-    paramKeys: props.keys,
+      paramKeys: props.keys,
       paramIsIdentifier: props.identifier,
       bodyStart: returnAt,
       bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, bodyClose) : -1,
+      bodyOpen,
+      bodyClose,
       offset: nameToken.start,
     }
   }
@@ -822,15 +866,18 @@ function arrowShape(
   let start = bodyStart
   let end = cursor.tokens.length
   if (cursor.tokens[start]?.kind === 'punct' && cursor.tokens[start]?.value === '{') {
-    const bodyClose = cursor.matchDelimiter(start) - 1
-    const returnAt = findReturn(cursor, start + 1, bodyClose)
+    const bodyOpen = start
+    const bodyClose = cursor.matchDelimiter(bodyOpen) - 1
+    const returnAt = findReturn(cursor, bodyOpen + 1, bodyClose)
     return {
       name: nameToken.value,
       paramProps: props.names,
-    paramKeys: props.keys,
+      paramKeys: props.keys,
       paramIsIdentifier: props.identifier,
       bodyStart: returnAt,
       bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, bodyClose) : -1,
+      bodyOpen,
+      bodyClose,
       offset: nameToken.start,
     }
   }
@@ -842,6 +889,8 @@ function arrowShape(
     paramIsIdentifier: props.identifier,
     bodyStart: start,
     bodyEnd: end,
+    bodyOpen: -1,
+    bodyClose: -1,
     offset: nameToken.start,
   }
 }
@@ -850,11 +899,15 @@ function arrowShape(
  * Parameter names of one parameter list.
  *
  * A destructured parameter yields two parallel lists:
- * - `keys` — the *property* names, in declaration order (`{title:e}` → `title`).
- *   Minification never renames object keys, so this order matches the request's
- *   props order and is the positional-fallback basis;
+ * - `keys` — the *property path*, in declaration order. A flat member is its own
+ *   name (`{title:e}` → `title`); a nested destructuring is a dotted path
+ *   (`{status:{displayName:d}}` → `status.displayName`). Minification never
+ *   renames object keys, so this is the identity a value can be looked up by;
  * - `names` — the *binding* identifiers an expression reads (`{title:e}` → `e`,
  *   `{used}` → `used`). These are what `readStaticValue` resolves.
+ *
+ * `identifier` is true for the `props` form, where reads are `props.x` members
+ * instead of destructured bindings.
  */
 function readParams(
   cursor: Cursor,
@@ -864,24 +917,7 @@ function readParams(
   const names: string[] = []
   const keys: string[] = []
   if (cursor.tokens[start]?.kind === 'punct' && cursor.tokens[start]?.value === '{') {
-    let at = start + 1
-    while (at < close) {
-      const token = cursor.tokens[at]!
-      if (token.kind === 'ident' || token.kind === 'string') {
-        const key = token.value
-        keys.push(key)
-        // `{ title }` shorthand binds the same name; `{ title: e }` binds `e`;
-        // `{ title: e = 1 }` still binds `e`.
-        if (cursor.tokens[at + 1]?.kind === 'punct' && cursor.tokens[at + 1]?.value === ':') {
-          const binding = cursor.tokens[at + 2]
-          if (binding !== undefined && binding.kind === 'ident') names.push(binding.value)
-          at += 3
-          continue
-        }
-        names.push(key)
-      }
-      at += 1
-    }
+    collectDestructured(cursor, start, close, '', names, keys)
     return { names, keys, identifier: false }
   }
   const single = cursor.tokens[start]?.kind === 'ident' ? cursor.tokens[start]!.value : undefined
@@ -889,6 +925,71 @@ function readParams(
     names: single === undefined ? [] : [single],
     keys: single === undefined ? [] : [single],
     identifier: single !== undefined,
+  }
+}
+
+/**
+ * Collect one destructuring group, recursing into nested object patterns.
+ * @param prefix dotted path of the group, empty at the parameter's top level.
+ */
+function collectDestructured(
+  cursor: Cursor,
+  openAt: number,
+  close: number,
+  prefix: string,
+  names: string[],
+  keys: string[],
+): void {
+  let at = openAt + 1
+  while (at < close) {
+    const token = cursor.tokens[at]!
+    if (token.kind !== 'ident' && token.kind !== 'string') {
+      at += 1
+      continue
+    }
+    const key = token.value
+    const path = prefix.length === 0 ? key : `${prefix}.${key}`
+    const next = cursor.tokens[at + 1]
+    if (next?.kind === 'punct' && next.value === ':') {
+      const binding = cursor.tokens[at + 2]
+      if (binding === undefined) return
+      // `{ outer: { inner } }` — recurse, keeping the dotted prefix.
+      if (binding.kind === 'punct' && binding.value === '{') {
+        const groupClose = cursor.matchDelimiter(at + 2) - 1
+        collectDestructured(cursor, at + 2, groupClose, path, names, keys)
+        at = groupClose + 1
+        continue
+      }
+      if (binding.kind === 'ident') {
+        names.push(binding.value)
+        keys.push(path)
+      }
+      // Skip a default `= <expr>` and any following member.
+      at += 3
+      while (at < close) {
+        const skip = cursor.tokens[at]!
+        if (skip.kind === 'punct' && (skip.value === ',' || skip.value === '}')) break
+        if (skip.kind === 'punct' && (skip.value === '(' || skip.value === '[' || skip.value === '{')) {
+          at = cursor.matchDelimiter(at)
+          continue
+        }
+        at += 1
+      }
+      continue
+    }
+    // Shorthand `{ title }` (optionally with a default).
+    names.push(key)
+    keys.push(path)
+    at += 1
+    while (at < close) {
+      const skip = cursor.tokens[at]!
+      if (skip.kind === 'punct' && (skip.value === ',' || skip.value === '}')) break
+      if (skip.kind === 'punct' && (skip.value === '(' || skip.value === '[' || skip.value === '{')) {
+        at = cursor.matchDelimiter(at)
+        continue
+      }
+      at += 1
+    }
   }
 }
 
@@ -1046,21 +1147,170 @@ interface PropEnv {
   readonly identifier: boolean
   /** The props `component-tree` was called with. */
   readonly values: Readonly<Record<string, unknown>>
+  /**
+   * Local bindings the function body declares before its return
+   * (`const { status, t } = props`). A component that takes `props` and
+   * destructures inside the body keeps its data here.
+   */
+  readonly locals: ReadonlyMap<string, unknown>
 }
 
 function emptyEnv(): PropEnv {
-  return { destructured: new Set(), bindings: [], keys: [], identifier: false, values: {} }
+  return {
+    destructured: new Set(),
+    bindings: [],
+    keys: [],
+    identifier: false,
+    values: {},
+    locals: new Map(),
+  }
 }
 
 /** Build the environment one component's parameters read from. */
-function envOf(shape: ComponentShape, props: Readonly<Record<string, unknown>>): PropEnv {
+function envOf(shape: ComponentShape, props: Readonly<Record<string, unknown>>, globals?: ReadonlyMap<string, unknown>): PropEnv {
   return {
     destructured: new Set(shape.paramProps),
     bindings: shape.paramProps,
     keys: shape.paramKeys,
     identifier: shape.paramIsIdentifier,
     values: props,
+    locals: new Map(globals ?? []),
   }
+}
+
+/** A copy of one environment with additional local bindings. */
+function withLocals(env: PropEnv, locals: ReadonlyMap<string, unknown>): PropEnv {
+  return {
+    destructured: env.destructured,
+    bindings: env.bindings,
+    keys: env.keys,
+    identifier: env.identifier,
+    values: env.values,
+    locals,
+  }
+}
+
+/**
+ * Apply the statements a function body runs before its return.
+ *
+ * A component commonly takes `props` and destructures inside the body
+ * (`function Card(props) { const { status, t } = props; … }`), and a page derives
+ * its data with a local (`const rows = props.status.providers`). Without this pass
+ * every such name is unknown, which is exactly why a data-driven card rendered as
+ * empty placeholders.
+ *
+ * Only what a static pass can answer is evaluated: `const|let|var` bindings whose
+ * initializer resolves to a JSON value, including object and array destructuring.
+ * Anything else is skipped, leaving the name unresolved rather than guessed.
+ */
+function evaluateBody(
+  cursor: Cursor,
+  model: BundleModel,
+  shape: ComponentShape,
+  props: Readonly<Record<string, unknown>>,
+): PropEnv {
+  let env = envOf(shape, props, model.globals)
+  if (shape.bodyOpen < 0 || shape.bodyClose < 0) return env
+  const locals = new Map<string, unknown>(env.locals)
+  env = withLocals(env, locals)
+
+  let at = shape.bodyOpen + 1
+  while (at < shape.bodyClose) {
+    const token = cursor.tokens[at]!
+    if (token.kind === 'punct' && token.value === '{') {
+      // A nested block, or a destructuring pattern: only a declaration list is
+      // interesting here, so skip the group and keep scanning at its end.
+      at = cursor.matchDelimiter(at)
+      continue
+    }
+    if (token.kind === 'keyword' && (token.value === 'const' || token.value === 'let' || token.value === 'var')) {
+      at = readLocalDeclaration(cursor, model, at, shape.bodyClose, env, locals)
+      continue
+    }
+    at += 1
+  }
+  return env
+}
+
+/**
+ * Read one `const|let|var` declaration list into `locals`.
+ * @returns the token index to continue scanning from.
+ */
+function readLocalDeclaration(
+  cursor: Cursor,
+  model: BundleModel,
+  declareAt: number,
+  limit: number,
+  env: PropEnv,
+  locals: Map<string, unknown>,
+): number {
+  let at = declareAt + 1
+  while (at < limit) {
+    const target = cursor.tokens[at]
+    if (target === undefined) return limit
+    if (target.kind === 'punct' && target.value === ';') return at + 1
+    // Object pattern: `const { a, b: c } = expr`.
+    if (target.kind === 'punct' && target.value === '{') {
+      const close = cursor.matchDelimiter(at) - 1
+      if (cursor.tokens[close + 1]?.value !== '=') return close + 1
+      const valueEnd = expressionEnd(cursor, close + 2, limit)
+      const value = readStaticValue(cursor, close + 2, valueEnd, model, env)
+      if (value.t === 'value') {
+        const names: string[] = []
+        const keys: string[] = []
+        collectDestructured(cursor, at, close, '', names, keys)
+        for (let index = 0; index < names.length; index += 1) {
+          const walked = walkPath(value.v, (keys[index] ?? '').split('.'))
+          if (walked !== undefined) locals.set(names[index]!, walked)
+        }
+      }
+      at = valueEnd
+      if (cursor.tokens[at]?.value === ',') { at += 1; continue }
+      return at
+    }
+    // Array pattern: `const [a, b] = expr`.
+    if (target.kind === 'punct' && target.value === '[') {
+      const close = cursor.matchDelimiter(at) - 1
+      if (cursor.tokens[close + 1]?.value !== '=') return close + 1
+      const valueEnd = expressionEnd(cursor, close + 2, limit)
+      const value = readStaticValue(cursor, close + 2, valueEnd, model, env)
+      if (value.t === 'value' && Array.isArray(value.v)) {
+        let index = 0
+        for (let slot = at + 1; slot < close; slot += 1) {
+          const name = cursor.tokens[slot]
+          if (name?.kind === 'ident') {
+            const item = value.v[index]
+            if (item !== undefined) locals.set(name.value, item)
+            index += 1
+          }
+        }
+      }
+      at = valueEnd
+      if (cursor.tokens[at]?.value === ',') { at += 1; continue }
+      return at
+    }
+    // Simple binding: `const rows = expr`.
+    if (target.kind === 'ident' && cursor.tokens[at + 1]?.value === '=') {
+      const valueEnd = expressionEnd(cursor, at + 2, limit)
+      // A helper function the body declares: keep its shape so a later call can
+      // be inlined (`const rank = provider => …` then `rank(left) - rank(right)`).
+      const helper = readCallback(cursor, at + 2, valueEnd, model)
+      if (helper !== undefined) {
+        locals.set(target.value, { __dshLocalFunction: true, shape: helper } satisfies LocalFunction)
+        at = valueEnd
+        if (cursor.tokens[at]?.value === ',') { at += 1; continue }
+        return at
+      }
+      const value = readStaticValue(cursor, at + 2, valueEnd, model, env)
+      if (value.t === 'value') locals.set(target.value, value.v)
+      else if (value.t === 'text') locals.set(target.value, value.text)
+      at = valueEnd
+      if (cursor.tokens[at]?.value === ',') { at += 1; continue }
+      return at
+    }
+    at += 1
+  }
+  return at
 }
 
 /**
@@ -1075,10 +1325,36 @@ function propValue(name: string, env: PropEnv): { found: boolean; value: unknown
   if (name in env.values) return { found: true, value: env.values[name] }
   const position = env.bindings.indexOf(name)
   if (position >= 0 && position < env.keys.length) {
-    const key = env.keys[position]!
-    if (key in env.values) return { found: true, value: env.values[key] }
+    // The key is a property *path*: a nested destructuring reads deeper than one
+    // level (`{status:{displayName:d}}` binds `d` to `props.status.displayName`).
+    const path = env.keys[position]!
+    if (path in env.values) return { found: true, value: env.values[path] }
+    const walked = walkPath(env.values, path.split('.'))
+    if (walked !== undefined) return { found: true, value: walked }
   }
   return { found: false, value: undefined }
+}
+
+/**
+ * Walk one dotted property path through JSON data.
+ * @returns the value, or undefined when any segment is missing.
+ */
+function walkPath(root: unknown, segments: readonly string[]): unknown {
+  let current = root
+  for (const segment of segments) {
+    if (current === null || current === undefined) return undefined
+    if (Array.isArray(current)) {
+      const index = Number(segment)
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) return undefined
+      current = current[index]
+      continue
+    }
+    if (typeof current !== 'object') return undefined
+    const record = current as Record<string, unknown>
+    if (!Object.prototype.hasOwnProperty.call(record, segment)) return undefined
+    current = record[segment]
+  }
+  return current
 }
 
 /**
@@ -1122,23 +1398,43 @@ function readStaticValue(
     }
   }
 
-  // Conditional: resolve the statically-known branch, report the rest.
-  const cond = splitConditional(cursor, start, end)
-  if (cond !== undefined) {
-    const test = readStaticValue(cursor, cond[0], cond[1], model, env, depth + 1)
-    if (test.t === 'value' && typeof test.v === 'boolean') {
-      return readStaticValue(cursor, test.v ? cond[2] : cond[4], test.v ? cond[3] : cond[5], model, env, depth + 1)
-    }
-    return { t: 'opaque', r: 'conditional' }
-  }
-
-  // Sequence expression `(a, b)`: only the last matters for rendering. A span
-  // that *is* one balanced parenthesis/array/object group must not be mistaken
-  // for a sequence — the group itself is the expression.
+  // A span that *is* one balanced group is the expression itself: `{ … }`, `[…]`
+  // or `(…)`. Scanning it for `? :` or operators would read members of the
+  // object as syntax, so the group branches below own it.
   const first2 = cursor.tokens[start]!
   const isGroup = first2.kind === 'punct'
     && (first2.value === '(' || first2.value === '[' || first2.value === '{')
     && cursor.matchDelimiter(start) === end
+
+  if (!isGroup) {
+    // Conditional: pick the branch a known test selects. The test is read as
+    // data, so `status.loggedIn ? … : …` follows the value the caller supplied.
+    const cond = splitConditional(cursor, start, end)
+    if (cond !== undefined) {
+      const test = readStaticValue(cursor, cond[0], cond[1], model, env, depth + 1)
+      const decided = truthiness(test)
+      if (decided !== undefined) {
+        return readStaticValue(cursor, decided ? cond[2] : cond[4], decided ? cond[3] : cond[5], model, env, depth + 1)
+      }
+      return { t: 'opaque', r: 'conditional' }
+    }
+
+    // A logical or arithmetic operator over data: `a + b`, `x ?? y`, `a === b`.
+    const binary = readBinary(cursor, start, end, model, env, depth)
+    if (binary !== undefined) return binary
+
+    // An array method over data: `rows.map(cb)`, `rows.filter(cb)`.
+    const methodCall = readArrayMethod(cursor, start, end, model, env, depth)
+    if (methodCall !== undefined) return methodCall
+  }
+
+  // Template literal with substitutions: build the string when every part is data.
+  if (first.kind === 'template' && end === start + 1) {
+    const interpolated = readTemplate(cursor, first, model, env, depth)
+    if (interpolated !== undefined) return interpolated
+  }
+
+  // Sequence expression `(a, b)`: only the last matters for rendering.
   if (!isGroup) {
     const top = splitTopLevel(cursor, start, end)
     if (top.length > 1) {
@@ -1146,6 +1442,15 @@ function readStaticValue(
       return readStaticValue(cursor, last[0], last[1], model, env, depth + 1)
     }
   }
+
+  // A hook that computes a value: `useMemo(() => …, deps)`. The callback runs once
+  // with the data the body already bound, which is how a page derives its list.
+  const memoized = readMemoCall(cursor, start, end, model, env, depth)
+  if (memoized !== undefined) return memoized
+
+  // A call to a local helper declared in the body (`rank(provider)`).
+  const localCall = readLocalFunctionCall(cursor, start, end, model, env, depth)
+  if (localCall !== undefined) return localCall
 
   switch (first.kind) {
     case 'string':
@@ -1172,11 +1477,20 @@ function readStaticValue(
       if (first.value === '-' && cursor.tokens[start + 1]?.kind === 'number' && end === start + 2) {
         return { t: 'value', v: -Number(cursor.tokens[start + 1]!.value.replace(/[_n]/g, '')) }
       }
-      // Array literal.
+      // Array literal, with spread: `[...providers]` copies the data array.
       if (first.value === '[' && cursor.matchDelimiter(start) === end) {
         const items: unknown[] = []
         for (const [a, b] of splitTopLevel(cursor, start + 1, end - 1)) {
-          const value = readStaticValue(cursor, a, b, model, env, depth + 1)
+          const spread = cursor.tokens[a]
+          const isSpread = spread?.kind === 'punct' && spread.value === '...'
+          const value = readStaticValue(cursor, isSpread ? a + 1 : a, b, model, env, depth + 1)
+          if (isSpread) {
+            if (value.t === 'value' && Array.isArray(value.v)) {
+              items.push(...value.v)
+              continue
+            }
+            return { t: 'opaque', r: 'spread-item' }
+          }
           if (value.t === 'value') items.push(value.v)
           else if (value.t === 'text') items.push(value.text)
           else return { t: 'opaque', r: 'array-item' }
@@ -1222,7 +1536,10 @@ function readStaticValue(
         return readCreateElementCall(cursor, start, end, model, env, depth)
       }
       // Member read into the props environment: `props.title`.
-      if (cursor.tokens[start + 1]?.value === '.' && cursor.tokens[start + 2]?.kind === 'ident' && end === start + 3) {
+      if (first.value === 'props'
+        && cursor.tokens[start + 1]?.value === '.'
+        && cursor.tokens[start + 2]?.kind === 'ident'
+        && end === start + 3) {
         if (env.identifier) {
           const value = env.values[cursor.tokens[start + 2]!.value]
           if (value !== undefined) return { t: 'value', v: value }
@@ -1230,6 +1547,11 @@ function readStaticValue(
         }
         return { t: 'opaque', r: 'member-expression' }
       }
+      // A member chain over data the caller supplied: `status.displayName`,
+      // `provider.accounts.length`, `row[0].name`. This is the binding that makes
+      // a data-driven card render from RPC data without executing plugin code.
+      const chained = readMemberChain(cursor, start, end, model, env)
+      if (chained !== undefined) return chained
       if (end === start + 1) {
         // Prop read by destructured name. A prop the caller did not supply stays
         // dynamic data the plugin controls at runtime — reported as
@@ -1246,6 +1568,10 @@ function readStaticValue(
         if (/^[A-Z]/.test(first.value) || model.components.has(first.value)) {
           return { t: 'component-ref', n: first.value }
         }
+        // A local binding the body declared: `const { status } = props`.
+        if (env.locals.has(first.value)) return { t: 'value', v: env.locals.get(first.value) }
+        // The whole props object, for `const { a } = props` and `props.rows`.
+        if (env.identifier && first.value === 'props') return { t: 'value', v: env.values }
         // A bare identifier can still be environment data the caller supplied.
         if (first.value in env.values) return { t: 'value', v: env.values[first.value] }
         return { t: 'opaque', r: 'identifier' }
@@ -1263,9 +1589,610 @@ function readStaticValue(
   }
 }
 
+/**
+ * Truth value of one statically-read test, or undefined when it is not data.
+ * JavaScript truthiness for the values JSON can hold.
+ */
+function truthiness(value: StaticValue): boolean | undefined {
+  switch (value.t) {
+    case 'value':
+      if (value.v === null || value.v === undefined) return false
+      if (typeof value.v === 'boolean') return value.v
+      if (typeof value.v === 'number') return value.v !== 0 && !Number.isNaN(value.v)
+      if (typeof value.v === 'string') return value.v.length > 0
+      return true
+    case 'text':
+      return value.text.length > 0
+    case 'element':
+    case 'component-ref':
+    case 'children':
+      return true
+    case 'opaque':
+      return undefined
+  }
+}
+
+/** Operators a data expression may carry, longest match first. */
+const BINARY_OPERATORS = ['===', '!==', '>=', '<=', '==', '!=', '&&', '||', '??', '+', '>', '<'] as const
+
+/**
+ * Read one binary/logical expression over data: `a + b`, `x ?? y`, `a === b`.
+ *
+ * Scans for the *last* top-level operator so `a - b + c` groups right, which is
+ * enough for the value expressions a card writes. An operand that is not data
+ * makes the whole expression unknown rather than partially true.
+ */
+function readBinary(
+  cursor: Cursor,
+  start: number,
+  end: number,
+  model: BundleModel,
+  env: PropEnv,
+  depth: number,
+): StaticValue | undefined {
+  let at = start
+  let found: { index: number; operator: string } | undefined
+  while (at < end) {
+    const token = cursor.tokens[at]!
+    if (token.kind === 'punct') {
+      if (token.value === '(' || token.value === '[' || token.value === '{') {
+        at = cursor.matchDelimiter(at)
+        continue
+      }
+      const operator = BINARY_OPERATORS.find(candidate => candidate === token.value)
+      if (operator !== undefined && at > start) found = { index: at, operator }
+    }
+    at += 1
+  }
+  if (found === undefined) return undefined
+  const left = readStaticValue(cursor, start, found.index, model, env, depth + 1)
+  const right = readStaticValue(cursor, found.index + 1, end, model, env, depth + 1)
+  // Short-circuit forms only need one side.
+  if (found.operator === '&&' || found.operator === '||' || found.operator === '??') {
+    const leftTruth = truthiness(left)
+    if (found.operator === '??') {
+      if (left.t === 'value' && left.v === null) return right
+      if (left.t === 'value' && left.v === undefined) return right
+      if (left.t === 'value' || left.t === 'text') return left
+      return undefined
+    }
+    if (leftTruth === undefined) return undefined
+    if (found.operator === '&&') return leftTruth ? right : left
+    return leftTruth ? left : right
+  }
+  const leftValue = jsonOf(left)
+  const rightValue = jsonOf(right)
+  if (leftValue === undefined || rightValue === undefined) return undefined
+  switch (found.operator) {
+    case '===': return { t: 'value', v: leftValue.value === rightValue.value }
+    case '!==': return { t: 'value', v: leftValue.value !== rightValue.value }
+    case '==': return { t: 'value', v: leftValue.value === rightValue.value }
+    case '!=': return { t: 'value', v: leftValue.value !== rightValue.value }
+    case '+': {
+      const a = leftValue.value
+      const b = rightValue.value
+      if (typeof a === 'number' && typeof b === 'number') return { t: 'value', v: a + b }
+      if (typeof a === 'string' || typeof b === 'string') return { t: 'text', text: `${String(a)}${String(b)}` }
+      return undefined
+    }
+    case '>': case '<': case '>=': case '<=': {
+      const a = leftValue.value
+      const b = rightValue.value
+      if ((typeof a === 'number' && typeof b === 'number') || (typeof a === 'string' && typeof b === 'string')) {
+        const comparison = a < b ? -1 : a > b ? 1 : 0
+        if (found.operator === '>') return { t: 'value', v: comparison > 0 }
+        if (found.operator === '<') return { t: 'value', v: comparison < 0 }
+        if (found.operator === '>=') return { t: 'value', v: comparison >= 0 }
+        return { t: 'value', v: comparison <= 0 }
+      }
+      return undefined
+    }
+    default:
+      return undefined
+  }
+}
+
+/** The JSON value one static read carries, or undefined when it carries none. */
+function jsonOf(value: StaticValue): { value: unknown } | undefined {
+  if (value.t === 'value') return { value: value.v }
+  if (value.t === 'text') return { value: value.text }
+  return undefined
+}
+
+/**
+ * Read a template literal with substitutions, e.g. `` `${row.name} · ${count}` ``.
+ * Returns undefined when any interpolation is not data.
+ */
+function readTemplate(
+  cursor: Cursor,
+  token: Token,
+  model: BundleModel,
+  env: PropEnv,
+  depth: number,
+): StaticValue | undefined {
+  const body = token.value
+  if (!body.includes('${')) return undefined
+  let out = ''
+  let at = 0
+  while (at < body.length) {
+    const open = body.indexOf('${', at)
+    if (open < 0) {
+      out += decodeEscapes(body.slice(at))
+      break
+    }
+    out += decodeEscapes(body.slice(at, open))
+    // Find the matching `}` for this substitution.
+    let scan = open + 2
+    let level = 1
+    while (scan < body.length && level > 0) {
+      if (body[scan] === '{') level += 1
+      else if (body[scan] === '}') level -= 1
+      scan += 1
+    }
+    if (level !== 0) return undefined
+    const expression = body.slice(open + 2, scan - 1)
+    const inner = tokenize(expression)
+    if (inner.length === 0) return undefined
+    const sub = new Cursor(inner)
+    const value = readStaticValue(sub, 0, inner.length, model, env, depth + 1)
+    const json = jsonOf(value)
+    if (json === undefined) {
+      // A substitution the pass cannot read leaves a placeholder rather than a
+      // wrong string: the client shows that a value is pending.
+      out += '…'
+    } else {
+      out += String(json.value ?? '')
+    }
+    at = scan
+  }
+  return { t: 'text', text: out }
+}
+
+/**
+ * Read `rows.map(cb)` / `rows.filter(cb)` over data the caller supplied.
+ *
+ * The callback runs once per element with its parameter bound to that element, so
+ * a card's `providers.map(provider => <ProviderCard …/>)` becomes one child node
+ * per provider — the list a user came to see.
+ */
+function readArrayMethod(
+  cursor: Cursor,
+  start: number,
+  end: number,
+  model: BundleModel,
+  env: PropEnv,
+  depth: number,
+): StaticValue | undefined {
+  // Shape: <expression> . map|filter ( <callback> )
+  let at = start
+  let dotAt = -1
+  while (at < end) {
+    const token = cursor.tokens[at]!
+    if (token.kind === 'punct') {
+      if (token.value === '(' || token.value === '[' || token.value === '{') {
+        at = cursor.matchDelimiter(at)
+        continue
+      }
+      if (token.value === '.') dotAt = at
+    }
+    at += 1
+  }
+  if (dotAt < 0) return undefined
+  const method = cursor.tokens[dotAt + 1]
+  if (method === undefined || method.kind !== 'ident') return undefined
+  if (method.value !== 'map' && method.value !== 'filter' && method.value !== 'sort') return undefined
+  const openAt = dotAt + 2
+  if (cursor.tokens[openAt]?.value !== '(') return undefined
+  const close = cursor.matchDelimiter(openAt) - 1
+  if (close !== end - 1) return undefined
+
+  const subject = readStaticValue(cursor, start, dotAt, model, env, depth + 1)
+  if (subject.t !== 'value' || !Array.isArray(subject.v)) return undefined
+  const args = splitTopLevel(cursor, openAt + 1, close)
+  const callback = args[0]
+  if (callback === undefined) return undefined
+  const callbackShape = readCallback(cursor, callback[0], callback[1], model)
+  if (callbackShape === undefined) return undefined
+
+  // `sort` reorders data: run the comparator pairwise, which is exact for the
+  // rank-style comparators a provider list uses.
+  if (method.value === 'sort') {
+    const sorted = [...subject.v]
+    sorted.sort((left, right) => {
+      const value = invokeLocalFunction(cursor, model, callbackShape, [left, right], env, depth)
+      const numeric = jsonOf(value)?.value
+      return typeof numeric === 'number' ? numeric : 0
+    })
+    return { t: 'value', v: sorted }
+  }
+
+  const children: RenderNode[] = []
+  const kept: unknown[] = []
+  for (let index = 0; index < subject.v.length; index += 1) {
+    const element = subject.v[index]
+    const inner = withLocals(env, new Map(env.locals))
+    const locals = inner.locals as Map<string, unknown>
+    // The callback's parameters: element first, index second.
+    if (callbackShape.firstParam !== undefined) locals.set(callbackShape.firstParam, element)
+    if (callbackShape.secondParam !== undefined) locals.set(callbackShape.secondParam, index)
+    const value = callbackShape.expression
+      ? readStaticValue(cursor, callbackShape.bodyStart, callbackShape.bodyEnd, model, inner, depth + 1)
+      : readCallbackReturn(cursor, callbackShape, model, inner, depth)
+    if (method.value === 'filter') {
+      if (truthiness(value) === true) kept.push(element)
+      continue
+    }
+    for (const node of childrenOf(value)) children.push(node)
+  }
+  // `filter` yields data for the next step in a chain; `map` yields the nodes.
+  if (method.value === 'filter') return { t: 'value', v: kept }
+  return { t: 'children', c: children }
+}
+
+/** One inline callback recovered from a call argument. */
+interface CallbackShape {
+  readonly firstParam?: string
+  readonly secondParam?: string
+  /** Body span for an expression-bodied arrow. */
+  readonly bodyStart: number
+  readonly bodyEnd: number
+  /** True when the callback body is an expression rather than a block. */
+  readonly expression: boolean
+  /** Block body bounds, for `p => { … return … }`. */
+  readonly blockOpen: number
+  readonly blockClose: number
+}
+
+/** Read one arrow/function callback argument. */
+function readCallback(
+  cursor: Cursor,
+  start: number,
+  end: number,
+  model: BundleModel,
+): CallbackShape | undefined {
+  let at = start
+  // `function (a, b) { … }`
+  if (cursor.tokens[at]?.kind === 'keyword' && cursor.tokens[at]?.value === 'function') {
+    at += 1
+    if (cursor.tokens[at]?.kind === 'ident') at += 1
+    if (cursor.tokens[at]?.value !== '(') return undefined
+    const paramsClose = cursor.matchDelimiter(at) - 1
+    const names = paramNames(cursor, at + 1, paramsClose)
+    if (cursor.tokens[paramsClose + 1]?.value !== '{') return undefined
+    const blockOpen = paramsClose + 1
+    const blockClose = cursor.matchDelimiter(blockOpen) - 1
+    const returnAt = findReturn(cursor, blockOpen + 1, blockClose)
+    return {
+      firstParam: names[0],
+      secondParam: names[1],
+      bodyStart: returnAt,
+      bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, blockClose) : -1,
+      expression: false,
+      blockOpen,
+      blockClose,
+    }
+  }
+  // `a => expr` / `(a, b) => expr`
+  if (cursor.tokens[at]?.kind === 'ident' && cursor.tokens[at + 1]?.value === '=>') {
+    const arrowAt = at + 2
+    return arrowCallback(cursor, [cursor.tokens[at]!.value], arrowAt, end)
+  }
+  if (cursor.tokens[at]?.value !== '(') return undefined
+  const paramsClose = cursor.matchDelimiter(at) - 1
+  if (cursor.tokens[paramsClose + 1]?.value !== '=>') return undefined
+  const names = paramNames(cursor, at + 1, paramsClose)
+  return arrowCallback(cursor, names, paramsClose + 2, end)
+}
+
+/** Build a callback shape for an arrow body starting at `bodyStart`. */
+function arrowCallback(
+  cursor: Cursor,
+  names: string[],
+  bodyStart: number,
+  end: number,
+): CallbackShape {
+  if (cursor.tokens[bodyStart]?.value === '{') {
+    const blockOpen = bodyStart
+    const blockClose = cursor.matchDelimiter(blockOpen) - 1
+    const returnAt = findReturn(cursor, blockOpen + 1, blockClose)
+    return {
+      firstParam: names[0],
+      secondParam: names[1],
+      bodyStart: returnAt,
+      bodyEnd: returnAt >= 0 ? expressionEnd(cursor, returnAt, blockClose) : -1,
+      expression: false,
+      blockOpen,
+      blockClose,
+    }
+  }
+  return {
+    firstParam: names[0],
+    secondParam: names[1],
+    bodyStart,
+    bodyEnd: end,
+    expression: true,
+    blockOpen: -1,
+    blockClose: -1,
+  }
+}
+
+/** Parameter names of a simple callback parameter list. */
+function paramNames(cursor: Cursor, start: number, close: number): string[] {
+  const names: string[] = []
+  for (let at = start; at < close; at += 1) {
+    const token = cursor.tokens[at]!
+    if (token.kind === 'ident') names.push(token.value)
+  }
+  return names
+}
+
+/** Read the `return` expression of a block-bodied callback. */
+function readCallbackReturn(
+  cursor: Cursor,
+  shape: CallbackShape,
+  model: BundleModel,
+  env: PropEnv,
+  depth: number,
+): StaticValue {
+  if (shape.bodyStart < 0) return { t: 'opaque', r: 'callback-without-return' }
+  return readStaticValue(cursor, shape.bodyStart, shape.bodyEnd, model, env, depth + 1)
+}
+
+/**
+ * Read `useMemo(() => …, deps)`: run the callback once and read its result.
+ *
+ * A page commonly derives its data this way (`const rows = useMemo(() => […], [x])`).
+ * The callback is a pure function of the data the body already bound, so inlining
+ * it is equivalent to what the hook does on first render.
+ */
+function readMemoCall(
+  cursor: Cursor,
+  start: number,
+  end: number,
+  model: BundleModel,
+  env: PropEnv,
+  depth: number,
+): StaticValue | undefined {
+  let openAt = -1
+  const first = cursor.tokens[start]!
+  if (first.kind === 'ident' && cursor.tokens[start + 1]?.value === '(') openAt = start + 1
+  else {
+    // `(0, react.useMemo)(…)`: the callee is parenthesized.
+    if (first.kind !== 'punct' || first.value !== '(') return undefined
+    const groupClose = cursor.matchDelimiter(start)
+    if (cursor.tokens[groupClose]?.value !== '(') return undefined
+    const parts = splitTopLevel(cursor, start + 1, groupClose - 1)
+    const callee = parts[parts.length - 1]
+    if (callee === undefined || !isMemoName(cursor, callee[0], callee[1])) return undefined
+    openAt = groupClose
+  }
+  if (openAt < 0) return undefined
+  if (!isMemoCallee(cursor, start, openAt)) return undefined
+  const close = cursor.matchDelimiter(openAt) - 1
+  const args = splitTopLevel(cursor, openAt + 1, close)
+  const callback = args[0]
+  if (callback === undefined) return undefined
+  const shape = readCallback(cursor, callback[0], callback[1], model)
+  if (shape === undefined) return undefined
+  if (shape.expression) {
+    return readStaticValue(cursor, shape.bodyStart, shape.bodyEnd, model, env, depth + 1)
+  }
+  // A block-bodied callback gets its own locals (it usually declares a few).
+  const inner = evaluateBlock(cursor, model, shape, env)
+  return readCallbackReturn(cursor, shape, model, inner, depth)
+}
+
+/** Whether one callee span names `useMemo`. */
+function isMemoCallee(cursor: Cursor, start: number, openAt: number): boolean {
+  if (openAt === start + 1) return isMemoName(cursor, start, start + 1)
+  return isMemoName(cursor, start, openAt - 1)
+}
+
+/** Whether one span ends in the `useMemo` name. */
+function isMemoName(cursor: Cursor, start: number, end: number): boolean {
+  if (end <= start) return false
+  const last = cursor.tokens[end - 1]!
+  return last.kind === 'ident' && (last.value === 'useMemo' || last.value === 'useMemo$1')
+}
+
+/**
+ * Read a call to a helper the body declared (`const rank = provider => …`).
+ * The stored value is the helper's shape; calling it binds its parameters to the
+ * argument values and reads the returned expression.
+ */
+function readLocalFunctionCall(
+  cursor: Cursor,
+  start: number,
+  end: number,
+  model: BundleModel,
+  env: PropEnv,
+  depth: number,
+): StaticValue | undefined {
+  const callee = cursor.tokens[start]
+  if (callee === undefined || callee.kind !== 'ident') return undefined
+  if (cursor.tokens[start + 1]?.value !== '(') return undefined
+  const stored = env.locals.get(callee.value)
+  if (!isLocalFunction(stored)) return undefined
+  const openAt = start + 1
+  const close = cursor.matchDelimiter(openAt) - 1
+  if (close !== end - 1) return undefined
+  const args = splitTopLevel(cursor, openAt + 1, close)
+  const values = args.map(([a, b]) => {
+    const value = readStaticValue(cursor, a, b, model, env, depth + 1)
+    return jsonOf(value)?.value
+  })
+  return invokeLocalFunction(cursor, model, stored.shape, values, env, depth)
+}
+
+/** Marker stored for a function-valued local binding. */
+interface LocalFunction {
+  readonly __dshLocalFunction: true
+  readonly shape: CallbackShape
+}
+
+function isLocalFunction(value: unknown): value is LocalFunction {
+  return typeof value === 'object' && value !== null && (value as LocalFunction).__dshLocalFunction === true
+}
+
+/** Invoke a stored local function with positional arguments. */
+function invokeLocalFunction(
+  cursor: Cursor,
+  model: BundleModel,
+  shape: CallbackShape,
+  values: readonly unknown[],
+  env: PropEnv,
+  depth: number,
+): StaticValue {
+  const locals = new Map(env.locals)
+  if (shape.firstParam !== undefined) locals.set(shape.firstParam, values[0])
+  if (shape.secondParam !== undefined) locals.set(shape.secondParam, values[1])
+  const inner = withLocals(env, locals)
+  if (shape.expression) {
+    return readStaticValue(cursor, shape.bodyStart, shape.bodyEnd, model, inner, depth + 1)
+  }
+  return readCallbackReturn(cursor, shape, model, inner, depth)
+}
+
+/**
+ * Apply one callback body's `const` declarations.
+ *
+ * Blocks passed to hooks and array methods declare their own data
+ * (`const providers = status?.providers ?? []`), so they need the same binding pass
+ * a component body gets.
+ */
+function evaluateBlock(
+  cursor: Cursor,
+  model: BundleModel,
+  shape: CallbackShape,
+  env: PropEnv,
+): PropEnv {
+  if (shape.blockOpen < 0) return env
+  const locals = new Map(env.locals)
+  let localEnv = withLocals(env, locals)
+  let at = shape.blockOpen + 1
+  while (at < shape.blockClose) {
+    const token = cursor.tokens[at]!
+    if (token.kind === 'punct' && token.value === '{') {
+      at = cursor.matchDelimiter(at)
+      continue
+    }
+    if (token.kind === 'keyword' && (token.value === 'const' || token.value === 'let' || token.value === 'var')) {
+      at = readLocalDeclaration(cursor, model, at, shape.blockClose, localEnv, locals)
+      localEnv = withLocals(env, locals)
+      continue
+    }
+    at += 1
+  }
+  return localEnv
+}
+
+/**
+ * Read a member chain over caller-supplied data: `status.displayName`, * `provider.accounts.length`, `rows[0].name`, `props.status.providers`.
+ *
+ * This is what turns RPC data into a rendered card. The component reads a prop
+ * object the way it would at runtime; the static pass performs the same property
+ * reads against the JSON the client sent, so `{status.displayName}` becomes the
+ * provider's real name instead of an opaque node.
+ *
+ * @returns the resolved value, an opaque reason when the data lacks that path,
+ *   or undefined when the span is not a member chain at all.
+ */
+function readMemberChain(
+  cursor: Cursor,
+  start: number,
+  end: number,
+  model: BundleModel,
+  env: PropEnv,
+): StaticValue | undefined {
+  const base = cursor.tokens[start]
+  if (base === undefined || base.kind !== 'ident') return undefined
+  // `props.x` is handled before this call, and `props` itself is the environment.
+  if (end <= start + 2) return undefined
+  const path: string[] = []
+  let at = start
+  // Walk `ident ( . ident | [ literal ] )*` to the end of the span. `at` starts
+  // on the base identifier, so every continuation begins at the token *after* the
+  // member that was just consumed.
+  let scan = start + 1
+  while (scan < end) {
+    const token = cursor.tokens[scan]!
+    if (token.kind === 'punct' && (token.value === '.' || token.value === '?.')) {
+      const name = cursor.tokens[scan + 1]
+      if (name === undefined || name.kind !== 'ident') return undefined
+      path.push(name.value)
+      scan += 2
+      continue
+    }
+    if (token.kind === 'punct' && token.value === '[') {
+      const close = cursor.matchDelimiter(scan)
+      const keyToken = cursor.tokens[scan + 1]
+      if (keyToken === undefined || close !== scan + 3) return undefined
+      if (keyToken.kind === 'string') path.push(decodeEscapes(keyToken.value))
+      else if (keyToken.kind === 'number') path.push(String(Number(keyToken.value)))
+      else return undefined
+      scan = close
+      continue
+    }
+    return undefined
+  }
+  if (path.length === 0) return undefined
+
+  // Resolve the root through the environment the same way a runtime read would.
+  let cursorValue: unknown
+  const root = base.value
+  if (root === 'props' && env.identifier) {
+    cursorValue = env.values
+  } else if (env.locals.has(root)) {
+    // A body-declared local holding the data: `const { status } = props`.
+    cursorValue = env.locals.get(root)
+  } else if (Object.prototype.hasOwnProperty.call(env.values, root)) {
+    cursorValue = env.values[root]
+  } else if (root === 'props') {
+    cursorValue = env.values
+  } else if (model.components.has(root) || /^[A-Z]/.test(root)) {
+    // A component or module namespace: not data this pass can read.
+    return undefined
+  } else {
+    return { t: 'opaque', r: `member:${root}` }
+  }
+
+  for (let index = 0; index < path.length; index += 1) {
+    const key = path[index]!
+    if (cursorValue === null || cursorValue === undefined) {
+      return { t: 'opaque', r: `member:${root}.${path.slice(0, index + 1).join('.')}` }
+    }
+    if (Array.isArray(cursorValue)) {
+      if (key === 'length') {
+        cursorValue = cursorValue.length
+        continue
+      }
+      const numeric = Number(key)
+      if (!Number.isInteger(numeric) || numeric < 0 || numeric >= cursorValue.length) {
+        return { t: 'opaque', r: `member:${root}.${path.slice(0, index + 1).join('.')}` }
+      }
+      cursorValue = cursorValue[numeric]
+      continue
+    }
+    if (typeof cursorValue === 'string' && key === 'length') {
+      cursorValue = cursorValue.length
+      continue
+    }
+    if (typeof cursorValue === 'object') {
+      const record = cursorValue as Record<string, unknown>
+      if (!Object.prototype.hasOwnProperty.call(record, key)) {
+        return { t: 'opaque', r: `member:${root}.${path.slice(0, index + 1).join('.')}` }
+      }
+      cursorValue = record[key]
+      continue
+    }
+    // A primitive has no further members: report the path, do not guess.
+    return { t: 'opaque', r: `member:${root}.${path.join('.')}` }
+  }
+  return { t: 'value', v: cursorValue }
+}
+
 /** Whether one span names a translate helper. */
-function isTranslateCallee(cursor: Cursor, start: number, end: number): boolean {
-  if (end === start + 1 && cursor.tokens[start]?.kind === 'ident') {
+function isTranslateCallee(cursor: Cursor, start: number, end: number): boolean {  if (end === start + 1 && cursor.tokens[start]?.kind === 'ident') {
     const name = cursor.tokens[start]!.value
     return TRANSLATE_NAMES.has(name) || name.endsWith('Translate')
   }
@@ -1608,7 +2535,7 @@ export function buildComponentTree(
       truncated: false,
     }
   }
-  const env: PropEnv = envOf(shape, props)
+  const env: PropEnv = evaluateBody(model.cursor, model, shape, props)
   const counter = { nodes: 0, truncated: false }
   const value = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, env)
   const tree = renderValue(value, model, env, counter, 0)
@@ -1648,7 +2575,7 @@ function renderValue(
           // Placeholder strings (`<opaque:…>`) are *not* data and are dropped, or
           // the wrapper would print them as if the plugin had written that text.
           const inner = readStaticValue(
-            model.cursor, shape.bodyStart, shape.bodyEnd, model, envOf(shape, forwardedProps(value.e.props)),
+            model.cursor, shape.bodyStart, shape.bodyEnd, model, evaluateBody(model.cursor, model, shape, forwardedProps(value.e.props)),
           )
           const rendered = renderValue(inner, model, env, counter, depth + 1)
           return { ...value.e, children: rendered === null ? value.e.children : [rendered] }
@@ -1670,7 +2597,7 @@ function renderValue(
       if (shape === undefined || shape.bodyStart < 0) {
         return { kind: 'opaque', reason: `component:${value.n}` }
       }
-      const inner = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, envOf(shape, {}))
+      const inner = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, evaluateBody(model.cursor, model, shape, {}))
       const rendered = renderValue(inner, model, env, counter, depth + 1)
       return {
         kind: 'element',

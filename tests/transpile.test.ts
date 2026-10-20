@@ -291,3 +291,89 @@ describe('buildComponentTree', () => {
     assert.ok(built.warnings.some(note => note.includes('Missing')))
   })
 })
+
+describe('data binding', () => {
+  it('reads a prop object destructured inside the body', () => {
+    // The shape most real components use: take `props`, destructure in the body.
+    const source = bundle(`
+      function Card(props) {
+        const { status, t } = props;
+        return jsx('span', { children: status.displayName });
+      }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Card', { status: { displayName: 'Kimi Code' } })
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'span', children: [{ kind: 'text', value: 'Kimi Code' }],
+    })
+  })
+
+  it('reads a local derived from props and renders one child per row', () => {
+    const source = bundle(`
+      function List(props) {
+        const rows = props.rows;
+        return jsx('div', { children: rows.map(row => jsx('span', { children: row.name })) });
+      }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'List', {
+      rows: [{ name: 'first' }, { name: 'second' }],
+    })
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element',
+      type: 'div',
+      children: [
+        { kind: 'element', type: 'span', children: [{ kind: 'text', value: 'first' }] },
+        { kind: 'element', type: 'span', children: [{ kind: 'text', value: 'second' }] },
+      ],
+    })
+  })
+
+  it('filters before mapping, using the element index', () => {
+    const source = bundle(`
+      function List(props) {
+        return jsx('ul', { children: props.rows.filter((row, index) => index > 0).map(row => jsx('li', { children: row.name })) });
+      }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'List', { rows: [{ name: 'a' }, { name: 'b' }] })
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'ul',
+      children: [{ kind: 'element', type: 'li', children: [{ kind: 'text', value: 'b' }] }],
+    })
+  })
+
+  it('selects the branch a data test picks and interpolates a template', () => {
+    const source = bundle(`
+      function Badge(props) {
+        const { status } = props;
+        return jsx('i', {
+          children: status.loggedIn ? \`已连接 \${status.accounts.length} 个账号\` : '未登录',
+        });
+      }
+      return { apply() {} };
+    `)
+    const connected = buildComponentTree(source, 'Badge', {
+      status: { loggedIn: true, accounts: [{}, {}] },
+    })
+    assert.partialDeepStrictEqual(connected.tree as Record<string, unknown>, {
+      kind: 'element', type: 'i', children: [{ kind: 'text', value: '已连接 2 个账号' }],
+    })
+    const signedOut = buildComponentTree(source, 'Badge', { status: { loggedIn: false, accounts: [] } })
+    assert.partialDeepStrictEqual(signedOut.tree as Record<string, unknown>, {
+      kind: 'element', type: 'i', children: [{ kind: 'text', value: '未登录' }],
+    })
+  })
+
+  it('reads a module-level constant object', () => {
+    const source = bundle(`
+      const styles = { name: { fontWeight: 600 } };
+      function Label() { return jsx('span', { style: styles.name, children: 'x' }); }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Label', {})
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'span', props: { style: { fontWeight: 600 } },
+    })
+  })
+})
