@@ -36,6 +36,7 @@ import {
 } from './providers/package-inventory.ts'
 import { createHostSlotsProvider, type SlotBundleFace, type SlotInventoryFace, type SettingsFace } from './providers/host-slots.ts'
 import { createRpcProvider, type GatewayFace, type RpcAllowEntry } from './providers/rpc.ts'
+import { createNativePluginsProvider } from './providers/native-plugins.ts'
 import { DEFAULT_RENDER_BUDGET } from './slots/render-tree.ts'
 
 /** Cordis function-plugin name. */
@@ -344,6 +345,16 @@ function assembleProviders(
     settings: () => ctx.get('settings') as SettingsServiceFace | undefined,
   }))
   registry.add(createEventsProvider({ drain: () => events.drain() }))
+
+  // The native-companion catalogue: which installed plugins ship a Kotlin/Compose
+  // half, and what that half declares. The APK itself ships through the store;
+  // this only answers the App's "is there a native half and is it compatible".
+  registry.add(createNativePluginsProvider({
+    companions: {
+      list: () => collectNativeCompanions(ctx),
+    },
+  }))
+
   const allowlist: RpcAllowEntry[] = config.rpcAllowlist.map(entry => ({
     namespace: entry.namespace,
     method: entry.method,
@@ -368,6 +379,50 @@ function assembleProviders(
     warnings.push('no plugin manager: package-inventory reports provider/unavailable')
   }
   return { registry, warnings }
+}
+
+/**
+ * Collect every native-companion declaration the installed plugins make.
+ *
+ * A JS plugin declares its Kotlin/Compose half in its `package.json` under
+ * `dsh.native` (`{ pluginId, name, apiVersion, minAppVersion, capabilities,
+ * storeUrl }`). The bridge reads those declarations off the plugin manager's
+ * bundle records — never from the filesystem — so a plugin that is installed but
+ * disabled, or present but not yet mounted, still reports its native half.
+ *
+ * @param ctx - Host plugin context.
+ * @returns the declarations; empty when no plugin ships a native half or the
+ *   plugin manager is unavailable.
+ */
+function collectNativeCompanions(ctx: Context): import('./providers/native-plugins.ts').NativeCompanionDeclaration[] {
+  interface BundleRecord {
+    name?: string
+    meta?: unknown
+  }
+  const manager = ctx.get('pluginManager') as { listBundles?: () => unknown } | undefined
+  const bundles = manager?.listBundles?.()
+  if (!Array.isArray(bundles)) return []
+  const out: import('./providers/native-plugins.ts').NativeCompanionDeclaration[] = []
+  for (const raw of bundles as readonly BundleRecord[]) {
+    const meta = raw?.meta
+    if (typeof meta !== 'object' || meta === null) continue
+    const native = (meta as Record<string, unknown>)['native'] ?? (meta as Record<string, Record<string, unknown>>)['dsh']?.['native']
+    if (typeof native !== 'object' || native === null) continue
+    const decl = native as Record<string, unknown>
+    const pluginId = typeof decl['pluginId'] === 'string' ? decl['pluginId'] : raw.name
+    if (typeof pluginId !== 'string' || pluginId.length === 0) continue
+    out.push({
+      pluginId,
+      name: typeof decl['name'] === 'string' ? decl['name'] : undefined,
+      apiVersion: typeof decl['apiVersion'] === 'number' ? decl['apiVersion'] : undefined,
+      minAppVersion: typeof decl['minAppVersion'] === 'number' ? decl['minAppVersion'] : undefined,
+      capabilities: Array.isArray(decl['capabilities'])
+        ? (decl['capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string')
+        : undefined,
+      storeUrl: typeof decl['storeUrl'] === 'string' ? decl['storeUrl'] : undefined,
+    })
+  }
+  return out
 }
 
 

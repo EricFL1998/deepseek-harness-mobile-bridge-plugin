@@ -195,6 +195,37 @@ dropped with a warning). The bridge re-broadcasts it on the Host event bus as
 (`events/pending`), so the client re-pulls the component tree once the plugin
 has reacted. A composition without an event bus still answers `ok` and warns.
 
+## `native-plugins` (version 1)
+
+The catalogue of native companion plugins. A JS plugin whose author also ships
+a Kotlin/Compose APK (rendered through the native SDK) declares that half in its
+`package.json` under `dsh.native`. The bridge surfaces those declarations so the
+Android client can mark a plugin as "native enhanced" and gate on compatibility
+before any download. The APK itself ships through the store / package manager,
+never through the bridge.
+
+### `list`
+
+```json
+{ "companions": [
+  { "pluginId": "changfenhuang.kimi-oauth", "name": "Kimi 登录",
+    "apiVersion": 1, "minAppVersion": 12,
+    "capabilities": ["openUrl", "storage"], "storeUrl": "https://…" }
+] }
+```
+
+### `for { pluginId }`
+
+One plugin's declaration, or `{ "companion": null }` when it ships no native
+half. Omitting `pluginId` also answers `null`.
+
+- `pluginId` pairs the companion APK with this JS plugin — it equals the APK's
+  `dsh.plugin.id` and the componentId prefix the JS half registers under.
+- `apiVersion` / `minAppVersion` let the App refuse an incompatible companion
+  before loading it (the ABI gate); absent means "any".
+- `capabilities` are the strings the companion's `PluginDescriptor` declares;
+  the App shows them on the store/detail page.
+
 ## `package-inventory` (version 1)
 
 ### `bundles { name? }`

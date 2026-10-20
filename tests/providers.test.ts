@@ -17,6 +17,7 @@ import { BridgeFailure, type WarningSink } from '../src/protocol/provider.ts'
 import { createEchoGateway, createFixtureComposition } from './fixtures.ts'
 import { createEventQueue } from '../src/events.ts'
 import { createEventsProvider } from '../src/providers/events.ts'
+import { createNativePluginsProvider } from '../src/providers/native-plugins.ts'
 
 /** A warning sink that records what a provider reported. */
 function sink(): WarningSink & { readonly messages: string[] } {
@@ -892,5 +893,34 @@ test('client-slots/dispatch re-broadcasts the event and queues a refresh', async
     async () => provider.ops.dispatch!({ componentId: 'x#y', event: 'explode' }, sink()),
     (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
   )
+})
+
+test('native-plugins/list answers every declared native companion', async () => {
+  const provider = createNativePluginsProvider({
+    companions: {
+      list: () => [
+        { pluginId: 'changfenhuang.kimi-oauth', name: 'Kimi 登录', apiVersion: 1, minAppVersion: 12, capabilities: ['openUrl', 'storage'] },
+        { pluginId: 'no-native' },
+      ],
+    },
+  })
+  const answer = await provider.ops.list!({}, sink()) as { companions: { pluginId: string }[] }
+  assert.deepEqual(answer.companions.map((c) => c.pluginId), ['changfenhuang.kimi-oauth', 'no-native'])
+})
+
+test('native-plugins/for finds one companion or answers null', async () => {
+  const provider = createNativePluginsProvider({
+    companions: {
+      list: () => [
+        { pluginId: 'changfenhuang.kimi-oauth', name: 'Kimi 登录', capabilities: ['openUrl'] },
+      ],
+    },
+  })
+  const hit = await provider.ops.for!({ pluginId: 'changfenhuang.kimi-oauth' }, sink()) as { companion: { name: string } | null }
+  assert.equal(hit.companion?.name, 'Kimi 登录')
+  const miss = await provider.ops.for!({ pluginId: 'plain-js-plugin' }, sink()) as { companion: unknown }
+  assert.equal(miss.companion, null)
+  const absent = await provider.ops.for!({}, sink()) as { companion: unknown }
+  assert.equal(absent.companion, null)
 })
 
