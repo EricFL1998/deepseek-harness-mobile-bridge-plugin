@@ -455,6 +455,7 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
         }
         const payload = optionalObject(args, 'payload') ?? {}
         const projected = projectJson(payload, 'payload')
+        let handled = false
         for (const path of projected.dropped) warnings.warn(`dropped payload member ${path}`)
         const body = (projected.value ?? {}) as Readonly<Record<string, unknown>>
         // A registered action runs the plugin's own Host code first: that is what
@@ -464,8 +465,9 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
           try {
             const ran = await options.runAction(componentId, actionId, body)
             if (ran) {
+              handled = true
               options.notify?.('client/refresh', componentId)
-              return { ok: true }
+              return { ok: true, handled: true }
             }
           } catch (error) {
             warnings.warn(`plugin action ${actionId} failed: ${(error as Error).message}`)
@@ -483,7 +485,9 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
         // The phone re-pulls the tree on its next poll; the refresh message makes
         // the update visible without waiting for the poll interval.
         options.notify?.('client/refresh', componentId)
-        return { ok: true }
+        // handled:false 表示没有插件逻辑执行（Host 半边没注册动作）；客户端可以据此
+        // 降级到整页 Web 界面，而不是让按钮看起来「点了没反应」。
+        return { ok: true, handled }
       },
     },
   }

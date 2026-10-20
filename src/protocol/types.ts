@@ -373,3 +373,16 @@ export interface ComponentTreeData {
    */
   readonly apiPrefix?: string
 }
+
+export interface DispatchData {
+  /** True when a plugin Host half actually ran the reported action. */
+  readonly handled?: boolean
+}
+
+export interface ComponentTreeData {
+  /** Host methods the page's buttons call, offered when no native action is registered. */
+  readonly actions?: readonly {
+    readonly method: string
+    readonly payload?: Record<string, unknown>
+  }[]
+}

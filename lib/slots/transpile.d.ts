@@ -90,6 +90,11 @@ export interface TranspiledTree {
      * show values the static pass cannot compute.
      */
     readonly data: readonly TranspiledDataSource[];
+    /** Host methods this bundle's buttons call (write methods, for fallback actions). */
+    readonly actions: readonly {
+        readonly method: string;
+        readonly payload?: Record<string, unknown>;
+    }[];
 }
 /** Ceilings applied to one parse / render. */
 export interface TranspileBudget {
@@ -263,4 +268,18 @@ export declare function extractDataSources(cursor: Cursor, shape: ComponentShape
  * @returns one entry per distinct state name.
  */
 export declare function collectBundleDataSources(model: BundleModel): TranspiledDataSource[];
+/**
+ * Host methods a bundle's handlers call that do change something.
+ *
+ * The inverse of a data source: these are the calls behind buttons (`login`,
+ * `checkin`, `setAutoOn`). A client cannot run the browser handler, but it can offer
+ * to invoke the same Host method when the plugin has not registered a native action.
+ *
+ * @param model - the parsed bundle.
+ * @returns one entry per distinct write method, with its literal payload when given.
+ */
+export declare function collectActionMethods(model: BundleModel): {
+    method: string;
+    payload?: Record<string, unknown>;
+}[];
 export {};

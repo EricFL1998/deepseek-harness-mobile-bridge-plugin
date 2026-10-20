@@ -236,6 +236,7 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
           layout: (await mobileLayout(packageName, member)) ?? null,
           data: built.data,
           apiPrefix: await apiPrefix(packageName),
+          actions: built.actions,
         }
       },
 
