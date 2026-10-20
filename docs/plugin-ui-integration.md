@@ -224,3 +224,41 @@ App 的「插件设置」列表会显示这一页，改动会写回 Host。
 3. 可点击元素的 `data-action` 与 `mobileUi.registerAction` 的 `actionId` 一致；
 4. 用浏览器打开同一页面确认文案/结构，再对比 App 里转译出的结果；
 5. 点按钮后看 Host 日志：动作执行 + 组件刷新各一条。
+
+---
+
+## 8. 数据与 API 前缀（通用约定）
+
+插件界面里的数值来自插件自己的 Host 方法。App 不需要认识你的插件，只要遵守下面三条
+约定，界面就能自动带上真实数据：
+
+1. **数据源**：你在组件里写
+
+   ```js
+   const [status, setStatus] = useState()
+   // …
+   const next = await call('status')
+   setStatus(next)
+   ```
+
+   bridge 会从 bundle 里读到 `call('status')`，并把方法名转成驼峰作为 prop 名
+   （`status`；`auto-state` → `autoState`）告诉 App。App 取回结果后以**同名 prop**
+   注入，因此 `useState` 的变量名请与方法名一致。
+
+2. **只读方法**：数据源会定期刷新（打开页面 15s、行内胶囊 20s），因此只有看起来
+   是查询的方法会被当成数据源（`status` / `usage` / `get*` / `list*` / `balance`…）；
+   `set*`、`checkin`、`login`、`refresh` 等有副作用的调用不会被预取，只会作为按钮
+   动作由你在 Host 半边执行。
+
+3. **按 provider 取数**：`call('usage', { provider })` 这种只传当前服务商的调用，
+   bridge 会标记成 provider 作用域；App 拿到你的 `status.providers` 后逐个 provider
+   各取一次，合成 `{ provider: 结果 }` 注入 `usage`，与你浏览器里维护的结构一致。
+
+**API 前缀**：`call('status')` 实际打到 `<prefix>.status`。前缀默认由包名推出来
+（`dsh-plugin-xxx` → `xxx`），也可以在 `package.json` 里显式声明：
+
+```json
+{ "dsh": { "pluginId": "your-plugin-id" } }
+```
+
+这样与包名不一致时也不需要客户端猜。

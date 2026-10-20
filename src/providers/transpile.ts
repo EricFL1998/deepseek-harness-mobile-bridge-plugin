@@ -100,6 +100,35 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
    * @param member - the `<id>` half.
    * @returns the binding, or undefined when the plugin declares none.
    */
+  /**
+   * The API prefix a package's own methods are served under.
+   *
+   * The browser `call('status')` reaches `<prefix>.status`. A package can state the
+   * prefix itself (`dsh.pluginId`); otherwise the conventional `dsh-plugin-` prefix is
+   * stripped. Reporting it here keeps the client from guessing from the package name.
+   *
+   * @param packageName - the `<package>` half of the component identity.
+   * @returns the prefix, or the package name when nothing better is declared.
+   */
+  const apiPrefix = async (packageName: string): Promise<string> => {
+    for (const root of options.clientRoots()) {
+      try {
+        const pkg = JSON.parse(await readFile(join(root, packageName, 'package.json'), 'utf8')) as {
+          name?: string
+          dsh?: { pluginId?: string; id?: string }
+        }
+        const declared = pkg.dsh?.pluginId ?? pkg.dsh?.id
+        if (typeof declared === 'string' && declared.length > 0) return declared
+        const name = pkg.name ?? packageName
+        if (name.startsWith('dsh-plugin-')) return name.slice('dsh-plugin-'.length)
+        return name
+      } catch {
+        continue
+      }
+    }
+    return packageName
+  }
+
   const mobileLayout = async (
     packageName: string,
     member: string,
@@ -206,6 +235,7 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
           truncated: built.truncated,
           layout: (await mobileLayout(packageName, member)) ?? null,
           data: built.data,
+          apiPrefix: await apiPrefix(packageName),
         }
       },
 

@@ -2614,12 +2614,19 @@ export function buildComponentTree(
  * feed the result back as the state value.
  */
 export interface TranspiledDataSource {
-  /** State name the value lands in (`status` for `setStatus(next)`). */
+  /** Prop name the value is injected under (`status`, `usage`). */
   readonly state: string
   /** Host method the plugin calls (`status` → `<plugin>.status`). */
   readonly method: string
   /** Static payload argument, when the call passes an object literal. */
   readonly payload?: Record<string, unknown>
+  /**
+   * Set when the call takes only `{ provider }`.
+   *
+   * The client then fetches the method once per provider in `status` and injects a
+   * provider→result map, which is what the plugin's own usage state holds.
+   */
+  readonly scope?: 'provider'
 }
 
 /**
@@ -2654,12 +2661,20 @@ export function extractDataSources(
     seen.add(method)
     const close = cursor.matchDelimiter(at + 1)
     const payload = readLiteralPayload(cursor, at + 2, close)
+    // `call("usage", { provider })` 以「当前服务商」为参数：客户端要按 status 里的
+    // 每个 provider 各取一次，结果合成 map 才能喂给展开面板。
+    const providerScoped = takesProviderShorthand(cursor, at + 2, close)
     // state 名约定为方法名驼峰（`status` → `status`、`auto-state` → `autoState`）。
     // 官方插件的 useState 变量几乎总与方法同名，客户端以同名 prop 注入即可；
     // 按 setter 反推在多个取数调用并存时会互相错配，反而更不可靠。
     const state = method.replace(/-([a-z])/g, (_, ch: string) => ch.toUpperCase())
     if (state === "") continue
-    found.push(payload === undefined ? { state, method } : { state, method, payload })
+    found.push({
+      state,
+      method,
+      ...(payload === undefined ? {} : { payload }),
+      ...(providerScoped ? { scope: 'provider' as const } : {}),
+    })
   }
   return found
 }
@@ -2934,3 +2949,24 @@ export function collectBundleDataSources(model: BundleModel): TranspiledDataSour
   }
   return found
 }
+
+/**
+ * Whether a call passes only the current provider.
+ *
+ * Matches the shorthand object `{ provider }`: the shape official usage calls use.
+ * It tells the client to fetch the method once per provider.
+ *
+ * @param cursor - token stream.
+ * @param from - token index of the method string.
+ * @param close - index of the call closing paren.
+ * @returns true when the argument is exactly `{ provider }`.
+ */
+function takesProviderShorthand(cursor: Cursor, from: number, close: number): boolean {
+  const open = cursor.tokens[from + 1]
+  if (open === undefined || open.kind !== 'punct' || open.value !== '{') return false
+  const ident = cursor.tokens[from + 2]
+  const end = cursor.tokens[from + 3]
+  return ident?.kind === 'ident' && ident.value === 'provider' &&
+    end?.kind === 'punct' && end.value === '}' && from + 3 === close - 1
+}
+

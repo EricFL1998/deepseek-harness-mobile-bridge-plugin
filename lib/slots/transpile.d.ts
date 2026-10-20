@@ -227,12 +227,19 @@ export declare function buildComponentTree(source: string, componentName: string
  * feed the result back as the state value.
  */
 export interface TranspiledDataSource {
-    /** State name the value lands in (`status` for `setStatus(next)`). */
+    /** Prop name the value is injected under (`status`, `usage`). */
     readonly state: string;
     /** Host method the plugin calls (`status` → `<plugin>.status`). */
     readonly method: string;
     /** Static payload argument, when the call passes an object literal. */
     readonly payload?: Record<string, unknown>;
+    /**
+     * Set when the call takes only `{ provider }`.
+     *
+     * The client then fetches the method once per provider in `status` and injects a
+     * provider→result map, which is what the plugin's own usage state holds.
+     */
+    readonly scope?: 'provider';
 }
 /**
  * Pair every `call("<method>")` in a component body with the state it feeds.

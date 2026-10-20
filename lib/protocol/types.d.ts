@@ -309,10 +309,20 @@ export interface ComponentTreeData {
     readonly layout?: MobileLayoutData | null;
 }
 export interface ComponentTreeData {
-    /** Host data this component fetches; a client fills these before rendering. */
+    /** Set when a data source is fetched once per provider. */
     readonly data?: readonly {
         readonly state: string;
         readonly method: string;
         readonly payload?: Record<string, unknown>;
+        readonly scope?: 'provider';
     }[];
+}
+export interface ComponentTreeData {
+    /**
+     * API prefix the package's own methods are served under (`<prefix>.<method>`).
+     *
+     * The browser `call("status")` resolves to `<prefix>.status`; reporting it keeps a
+     * client from guessing the prefix from the package name.
+     */
+    readonly apiPrefix?: string;
 }
