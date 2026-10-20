@@ -10,6 +10,14 @@ export interface HostBundleRow {
     readonly rowId: string;
     readonly moduleName: string;
     readonly meta?: unknown;
+    /**
+     * The Loader entry this row resolves to, when the Host reports one.
+     *
+     * Absent means the row is not live (typically because its bundle is off), so it
+     * cannot be addressed through the profile patch either. Present means the entry
+     * exists even while it is disabled, which is what makes a row toggle possible.
+     */
+    readonly entryId?: string;
     /** Whether this row is enabled, when the Host reports it. */
     readonly enabled?: boolean;
 }

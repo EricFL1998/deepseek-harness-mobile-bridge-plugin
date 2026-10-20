@@ -143,7 +143,7 @@ export async function createFixtureComposition(options?: {
         availability: 'profile',
         version: '1.2.3',
         meta: { title: 'Sample plugin', description: 'A sample', icon: 'data:image/png;base64,AAAA' },
-        rows: [{ rowId: 'sample-row', moduleName: 'sample-plugin', meta: { title: 'Row title' } }],
+        rows: [{ rowId: 'sample-row', moduleName: 'sample-plugin', entryId: 'include:sample-row', meta: { title: 'Row title' } }],
       },
       {
         name: 'broken-plugin',
@@ -170,6 +170,12 @@ export async function createFixtureComposition(options?: {
           meta: { title: 'Sample plugin', icon: 'data:image/png;base64,BBBB' },
         },
         { entryId: 'silent', moduleName: 'silent', enabled: false, fiberPhase: null },
+        {
+          entryId: 'include:sample-row',
+          moduleName: 'sample-plugin',
+          enabled: false,
+          fiberPhase: 'active',
+        },
       ],
     }),
   }
@@ -198,3 +204,4 @@ export function createEchoGateway(): {
     },
   }
 }
+

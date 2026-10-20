@@ -215,7 +215,7 @@ needs one renderer for both.
       "enabled": true, "installed": true, "availability": "profile",
       "version": "1.2.3", "title": "…", "description": "…",
       "icon": "data:image/png;base64,…",
-      "rows": [{ "rowId": "…", "moduleName": "…", "title": "…" }],
+      "rows": [{ "rowId": "…", "moduleName": "…", "entryId": "include:…", "enabled": false, "title": "…" }],
       "errorCode": "not-bundle" }
   ]
 }
@@ -223,6 +223,12 @@ needs one renderer for both.
 
 `icon` is the package's own `meta.icon` data URL, passed through untouched. A
 bundle with a management error carries `errorCode` and no `version`.
+
+A row's `entryId` is the Loader entry the Host resolved that row to: present means
+the row is addressable (even while disabled), absent means it is not live — which
+is why a client cannot toggle it. `enabled` is joined from the Loader inventory
+(same rule as the browser page: an entry reports its own state, a row without one
+is `false`); it is absent only when the composition has no inventory service.
 
 ### `rows`
 

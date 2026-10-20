@@ -218,10 +218,22 @@ export interface InventoryBundle {
 export interface InventoryBundleRow {
     readonly rowId: string;
     readonly moduleName: string;
+    /**
+     * The Loader entry this row resolves to, when the Host reports one.
+     *
+     * Absent means the row is not live, so it cannot be toggled through the profile
+     * patch; present means the entry exists even while it is disabled.
+     */
+    readonly entryId?: string;
     readonly title?: string;
     readonly description?: string;
     readonly icon?: string;
-    /** Whether this row is enabled; absent means the Host did not report it. */
+    /**
+     * Whether this row is enabled, joined from the Loader inventory.
+     *
+     * Absent only when the composition has no inventory service; a row with no live
+     * entry reports `false`.
+     */
     readonly enabled?: boolean;
 }
 /** `package-inventory` / `rows` row, projected from the Loader inventory. */

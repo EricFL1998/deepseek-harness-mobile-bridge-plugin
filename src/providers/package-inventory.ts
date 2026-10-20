@@ -14,6 +14,14 @@ export interface HostBundleRow {
   readonly rowId: string
   readonly moduleName: string
   readonly meta?: unknown
+  /**
+   * The Loader entry this row resolves to, when the Host reports one.
+   *
+   * Absent means the row is not live (typically because its bundle is off), so it
+   * cannot be addressed through the profile patch either. Present means the entry
+   * exists even while it is disabled, which is what makes a row toggle possible.
+   */
+  readonly entryId?: string
   /** Whether this row is enabled, when the Host reports it. */
   readonly enabled?: boolean
 }
@@ -101,8 +109,12 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
         const localeTags = options.localeTags ?? []
         const name = optionalString(args, 'name')
         const bundles = await manager.listBundles()
+        // A row's on/off state lives in the Loader inventory, not in the bundle
+        // record: read it once and join by `entryId`, the same join the browser's
+        // own Plugins page performs. A row whose entry is not inventoried is off.
+        const entries = await rowEntries(options.pluginInventory())
         const rows = (name === undefined ? bundles : bundles.filter(bundle => bundle.name === name))
-          .map(bundle => projectBundle(bundle, localeTags))
+          .map(bundle => projectBundle(bundle, localeTags, entries))
         return { bundles: rows, managementAvailable: true }
       },
 
@@ -144,20 +156,45 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
 }
 
 /**
+ * The Loader inventory keyed by entry id, or undefined when this composition has no
+ * inventory service (then a row keeps whatever `enabled` the bundle record carried).
+ * @param inventory - the plugin inventory face, when present.
+ * @returns entry id → entry, or undefined.
+ */
+async function rowEntries(
+  inventory: PluginInventoryFace | undefined,
+): Promise<ReadonlyMap<string, HostInventoryEntry> | undefined> {
+  if (inventory === undefined) return undefined
+  const snapshot = await inventory.list()
+  return new Map(snapshot.entries.map(entry => [entry.entryId, entry]))
+}
+
+/**
  * Project one Host bundle record onto the wire row.
  * @param bundle - the Host record.
+ * @param localeTags - locale preference for title and description text.
+ * @param entries - the Loader inventory, when the composition has one.
  * @returns the wire row, with absent optional fields omitted.
  */
-function projectBundle(bundle: HostBundleInfo, localeTags: readonly string[]): InventoryBundle {
+function projectBundle(
+  bundle: HostBundleInfo,
+  localeTags: readonly string[],
+  entries: ReadonlyMap<string, HostInventoryEntry> | undefined,
+): InventoryBundle {
   const text = displayText(bundle.meta, localeTags)
-  const rows: InventoryBundleRow[] = (bundle.rows ?? []).map(row => ({
-    rowId: row.rowId,
-    moduleName: row.moduleName,
-    // Row enabled state comes from the Host; default to true when absent
-    // because a declared row that the Host lists is expected to be active.
-    ...(row.enabled === undefined ? {} : { enabled: row.enabled }),
-    ...displayText(row.meta, localeTags),
-  }))
+  const rows: InventoryBundleRow[] = (bundle.rows ?? []).map(row => {
+    const live = row.entryId === undefined ? undefined : entries?.get(row.entryId)
+    // Same rule as the browser page: a row the Host resolved to an entry takes its
+    // state from that entry; without an entry it cannot be running.
+    const enabled = entries === undefined ? row.enabled : (live?.enabled ?? false)
+    return {
+      rowId: row.rowId,
+      moduleName: row.moduleName,
+      ...(row.entryId === undefined ? {} : { entryId: row.entryId }),
+      ...(enabled === undefined ? {} : { enabled }),
+      ...displayText(row.meta, localeTags),
+    }
+  })
   return {
     name: bundle.name,
     official: bundle.official,

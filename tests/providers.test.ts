@@ -154,7 +154,7 @@ test('package-inventory/bundles passes meta.icon and rows through untouched', as
     title: 'Sample plugin',
     description: 'A sample',
     icon: 'data:image/png;base64,AAAA',
-    rows: [{ rowId: 'sample-row', moduleName: 'sample-plugin', title: 'Row title' }],
+    rows: [{ rowId: 'sample-row', moduleName: 'sample-plugin', entryId: 'include:sample-row', enabled: false, title: 'Row title' }],
   })
   assert.deepEqual(data.bundles[1], {
     name: 'broken-plugin',
@@ -200,6 +200,7 @@ test('package-inventory/rows reports the Loader inventory', async () => {
       icon: 'data:image/png;base64,BBBB',
     },
     { entryId: 'silent', moduleName: 'silent', enabled: false, fiberPhase: null },
+    { entryId: 'include:sample-row', moduleName: 'sample-plugin', enabled: false, fiberPhase: 'active' },
   ])
 })
 
@@ -719,3 +720,4 @@ test('client-slots/dispatch re-broadcasts the event and queues a refresh', async
     (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
   )
 })
+
