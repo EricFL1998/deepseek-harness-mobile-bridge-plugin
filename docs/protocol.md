@@ -193,9 +193,12 @@ needs one renderer for both.
   and either a registration id (resolved to the component it registered) or
   the component's own source name.
 - `props` resolves expressions that read the component's own props
-  (destructured names and `props.<name>` member reads). A prop the request did
-  not supply becomes `{ "kind": "opaque", "reason": "prop:<name>" }` — dynamic
-  data the plugin controls at runtime, not a resolution failure.
+  (destructured names and `props.<name>` member reads). A minified bundle that
+  renames a destructured binding (`{title:e}`) still resolves: the binding
+  falls back to the property name at the same position, which minification
+  preserves. A prop the request did not supply becomes
+  `{ "kind": "opaque", "reason": "prop:<name>" }` — dynamic data the plugin
+  controls at runtime, not a resolution failure.
 - Everything the static pass cannot resolve (calls, state, spreads, computed
   members) becomes an `opaque` node with its reason; nothing is guessed.
 - `truncated: true` means a depth/node budget stopped the walk; the tree is a
