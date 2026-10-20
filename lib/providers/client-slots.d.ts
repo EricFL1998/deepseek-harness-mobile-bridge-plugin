@@ -41,6 +41,18 @@ export interface ClientSlotsOptions {
     readonly maxClientBundles?: number;
     /** Locale tags to read the official roster's text with, preferred first. */
     readonly localeTags?: readonly string[];
+    /**
+     * Push one transient message toward the phone. `dispatch` uses it to confirm
+     * an interaction reached the Host, and to surface the requested refresh so
+     * the client re-pulls the component tree.
+     */
+    readonly notify?: (kind: 'toast' | 'client/refresh', text: string) => void;
+    /**
+     * Deliver one UI event to a plugin through the Host event bus
+     * (`ctx.emit('ui/<componentId>/<event>', payload)`), so a plugin that
+     * listens with `ctx.on` learns about the interaction.
+     */
+    readonly emit?: (event: string, payload: Readonly<Record<string, unknown>>) => void;
 }
 /**
  * Build the `client-slots` provider.

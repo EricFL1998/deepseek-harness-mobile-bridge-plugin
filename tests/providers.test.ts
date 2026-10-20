@@ -17,6 +17,7 @@ import { BridgeFailure, type WarningSink } from '../src/protocol/provider.ts'
 import { createEchoGateway, createFixtureComposition } from './fixtures.ts'
 import { createEventQueue } from '../src/events.ts'
 import { createEventsProvider } from '../src/providers/events.ts'
+import { createTranspileProvider } from '../src/providers/transpile.ts'
 
 /** A warning sink that records what a provider reported. */
 function sink(): WarningSink & { readonly messages: string[] } {
@@ -260,6 +261,7 @@ test('client-slots/list captures registrations, labels, order, and package', asy
       label: 'Sample Two',
       package: 'sample-plugin',
       placement: 'plugins.item',
+      origin: 'evaluated',
       render: { kind: 'component', componentId: 'sample-two' },
     },
     {
@@ -269,6 +271,7 @@ test('client-slots/list captures registrations, labels, order, and package', asy
       label: 'Sample One',
       package: 'sample-plugin',
       placement: 'plugins.item',
+      origin: 'evaluated',
       locale: 'sample',
       render: { kind: 'component', componentId: 'sample-one' },
     },
@@ -278,6 +281,7 @@ test('client-slots/list captures registrations, labels, order, and package', asy
       package: 'sample-plugin',
       // An unmapped slot stays visible under `other` instead of being dropped.
       placement: 'other',
+      origin: 'evaluated',
       render: { kind: 'factory', componentId: 'sample-factory' },
     },
   ])
@@ -632,4 +636,86 @@ test('events drain delivers each toast once and keeps only the newest few', asyn
   assert.equal(first.events.at(-1)!.text, 'm19')
   const second = await provider.ops.pending!({}, sink()) as { events: unknown[] }
   assert.deepEqual(second.events, [])
+})
+
+test('transpile/component-tree builds the tree of a bundle on disk', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-bridge-transpile-'))
+  cleanup.push(() => rm(root, { recursive: true, force: true }))
+  const dir = join(root, 'sample-plugin', 'lib')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'client.js'), `(() => { window.__ModuleLoader__.load({ id: 'sample-plugin#lib/client.js', factory: (require) => {
+var jsx = require('react/jsx-runtime').jsx, jsxs = require('react/jsx-runtime').jsxs;
+function SampleCard({ title }) {
+  return jsxs('div', { className: 'card', children: [
+    jsx('h2', { children: title }),
+    jsx('button', { onClick: 'login', children: 'Log in' }),
+  ] });
+}
+return { apply(ctx) {
+  ctx.effect(() => ctx.slots.register({ name: 'settings.section', id: 'sample-page', order: 3 }, SampleCard));
+} };
+} }); })();`)
+  const provider = createTranspileProvider({ clientRoots: () => [root] })
+  const data = await provider.ops['component-tree']!(
+    { componentId: 'sample-plugin#sample-page', props: { title: 'Subscription' } },
+    sink(),
+  ) as { componentId: string; tree: Record<string, unknown>; truncated: boolean }
+  assert.equal(data.componentId, 'sample-plugin#sample-page')
+  assert.equal(data.truncated, false)
+  assert.partialDeepStrictEqual(data.tree, {
+    kind: 'element',
+    type: 'div',
+    props: { className: 'card' },
+    children: [
+      { kind: 'element', type: 'h2', children: [{ kind: 'text', value: 'Subscription' }] },
+      { kind: 'element', type: 'button', children: [{ kind: 'text', value: 'Log in' }] },
+    ],
+  })
+})
+
+test('transpile/component-tree fails with its known ids for an unknown component', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-bridge-transpile-'))
+  cleanup.push(() => rm(root, { recursive: true, force: true }))
+  const dir = join(root, 'sample-plugin', 'lib')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'client.js'), `(() => { window.__ModuleLoader__.load({ id: 'x', factory: () => ({ apply(ctx) {
+  ctx.slots.register({ name: 'settings.section', id: 'known-page' }, () => null);
+} }) }); })();`)
+  const provider = createTranspileProvider({ clientRoots: () => [root] })
+  await assert.rejects(
+    async () => provider.ops['component-tree']!({ componentId: 'sample-plugin#absent' }, sink()),
+    (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
+  )
+  await assert.rejects(
+    async () => provider.ops['component-tree']!({ componentId: 'no-package#absent' }, sink()),
+    (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
+  )
+})
+
+test('client-slots/dispatch re-broadcasts the event and queues a refresh', async () => {
+  const queue = createEventQueue()
+  const emitted: { name: string; payload: unknown }[] = []
+  const provider = createClientSlotsProvider({
+    clientModules: () => undefined,
+    entryIds: [],
+    renderBudget: { maxDepth: 16, maxNodes: 500, maxBytes: 64 * 1024 },
+    maxIconSize: 256,
+    iconViewBox: '0 0 24 24',
+    notify: (kind, text) => { queue.push(kind, text) },
+    emit: (name, payload) => { emitted.push({ name, payload }) },
+  })
+  const answer = await provider.ops.dispatch!(
+    { componentId: 'sample-plugin#sample-page', event: 'press', payload: { id: 'login' } },
+    sink(),
+  ) as { ok: boolean }
+  assert.equal(answer.ok, true)
+  assert.deepEqual(emitted, [{ name: 'ui/sample-plugin#sample-page/press', payload: { id: 'login' } }])
+  const pending = queue.drain()
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0]!.kind, 'client/refresh')
+  assert.equal(pending[0]!.text, 'sample-plugin#sample-page')
+  await assert.rejects(
+    async () => provider.ops.dispatch!({ componentId: 'x#y', event: 'explode' }, sink()),
+    (error: unknown) => error instanceof BridgeFailure && error.code === 'args/invalid',
+  )
 })

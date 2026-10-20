@@ -11,9 +11,13 @@
  */
 /** One transient message. */
 export interface TransientEvent {
-    /** Message kind; only `toast` exists today. */
-    readonly kind: 'toast';
-    /** One line of text. */
+    /**
+     * Message kind. `toast` is shown as-is; `client/refresh` names a component
+     * (`text` is its componentId) whose tree the client should re-pull, which is
+     * how a plugin moves fresh state onto the phone after a `dispatch`.
+     */
+    readonly kind: 'toast' | 'client/refresh';
+    /** One line of text (toast) or the componentId to refresh (client/refresh). */
     readonly text: string;
     /** Monotonic sequence number, so a client can drop repeats. */
     readonly seq: number;
@@ -21,7 +25,7 @@ export interface TransientEvent {
 /** The queue the route writes to and the provider drains. */
 export interface EventQueue {
     /** Append one message; oldest entries are dropped past the cap. */
-    push(kind: 'toast', text: string): void;
+    push(kind: 'toast' | 'client/refresh', text: string): void;
     /** Take everything queued since the last drain. */
     drain(): readonly TransientEvent[];
 }

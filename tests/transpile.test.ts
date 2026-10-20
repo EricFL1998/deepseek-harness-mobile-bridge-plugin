@@ -1,0 +1,223 @@
+/**
+ * Tests for the static transpiler (`src/slots/transpile.ts`).
+ *
+ * Every fixture is the *compiled* shape a rolldown bundle ships: a
+ * `window.__ModuleLoader__.load({ id, factory })` IIFE whose factory registers
+ * slots and whose components return `_jsx(...)` / `React.createElement(...)`
+ * calls. The transpiler must recover those trees without executing anything.
+ */
+
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+import {
+  analyzeBundle, buildComponentTree, tokenize, DEFAULT_TRANSPILE_BUDGET,
+} from '../src/slots/transpile.ts'
+
+/** Wrap a factory body in the rolldown IIFE shape. */
+function bundle(body: string): string {
+  return `(() => { window.__ModuleLoader__.load({ id: 'test-pkg#lib/client.js', factory: (require) => {
+var jsx = require('react/jsx-runtime').jsx, jsxs = require('react/jsx-runtime').jsxs;
+${body}
+} }); })();`
+}
+
+describe('tokenize', () => {
+  it('splits identifiers, strings, numbers and punctuation', () => {
+    const tokens = tokenize(`const a = 'x'; b(1.5, "y")`)
+    assert.deepEqual(tokens.map(token => token.value), ['const', 'a', '=', 'x', ';', 'b', '(', '1.5', ',', 'y', ')'])
+  })
+
+  it('skips comments and keeps template literals atomic', () => {
+    const tokens = tokenize('a /* { ; } */ b // c\n`hi ${x} there`')
+    assert.deepEqual(tokens.map(token => [token.kind, token.value]), [
+      ['ident', 'a'], ['ident', 'b'], ['template', 'hi ${x} there'],
+    ])
+  })
+
+  it('distinguishes a regex literal from division', () => {
+    assert.deepEqual(tokenize('a = /x+/g').map(t => t.kind), ['ident', 'punct', 'regex'])
+    assert.deepEqual(tokenize('a = b / c').map(t => t.kind), ['ident', 'punct', 'ident', 'punct', 'ident'])
+  })
+})
+
+describe('analyzeBundle', () => {
+  it('recovers a register call with its static fields', () => {
+    const analyzed = analyzeBundle('test-pkg', bundle(`
+      return { apply(ctx) {
+        ctx.effect(() => ctx.slots.register({ name: 'settings.section', id: 'subscription', order: 10 }, SubscriptionPage));
+      } };
+    `))
+    assert.equal(analyzed.registrations.length, 1)
+    assert.partialDeepStrictEqual(analyzed.registrations[0], {
+      slot: 'settings.section', id: 'subscription', order: 10,
+      componentName: 'SubscriptionPage', kind: 'component',
+    })
+  })
+
+  it('finds register calls nested inside apply callbacks', () => {
+    const analyzed = analyzeBundle('test-pkg', bundle(`
+      return { apply(ctx) {
+        ctx.slots.inject('conversation.input.right', () =>
+          ctx.slots.register({ name: 'conversation.input.right' }, MicButton));
+      } };
+    `))
+    assert.equal(analyzed.registrations[0]?.slot, 'conversation.input.right')
+    assert.equal(analyzed.registrations[0]?.componentName, 'MicButton')
+  })
+
+  it('collects function and arrow components', () => {
+    const analyzed = analyzeBundle('test-pkg', bundle(`
+      function Card() { return jsx('div', { children: 'hi' }); }
+      const Chip = () => jsx('span', {});
+      return { apply() {} };
+    `))
+    const names = analyzed.components.map(component => component.name)
+    assert.ok(names.includes('Card'))
+    assert.ok(names.includes('Chip'))
+  })
+
+  it('reports the bundler jsx aliases it detected', () => {
+    const analyzed = analyzeBundle('test-pkg', bundle(`return { apply() {} };`))
+    assert.ok(analyzed.jsxNames.includes('jsx'))
+    assert.ok(analyzed.jsxNames.includes('jsxs'))
+  })
+})
+
+describe('buildComponentTree', () => {
+  it('turns a jsx call tree into element and text nodes', () => {
+    const source = bundle(`
+      function Hello() {
+        return jsxs('div', { className: 'card', children: [
+          jsx('h2', { children: 'Title' }),
+          jsx('p', { children: 'Body text' }),
+        ] });
+      }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Hello', {})
+    assert.deepEqual(built.tree, {
+      kind: 'element', type: 'div', key: null,
+      props: { className: 'card' },
+      children: [
+        { kind: 'element', type: 'h2', key: null, props: {}, children: [{ kind: 'text', value: 'Title' }] },
+        { kind: 'element', type: 'p', key: null, props: {}, children: [{ kind: 'text', value: 'Body text' }] },
+      ],
+    })
+    assert.equal(built.truncated, false)
+  })
+
+  it('keeps static style objects as JSON props', () => {
+    const source = bundle(`
+      const Styled = () => jsx('div', { style: { color: 'red', fontSize: 14 } });
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Styled', {})
+    assert.partialDeepStrictEqual(built.tree, {
+      kind: 'element', type: 'div',
+      props: { style: { color: 'red', fontSize: 14 } },
+    })
+  })
+
+  it('resolves destructured and member-read props from the request', () => {
+    const source = bundle(`
+      function Greeting({ name }) { return jsx('span', { children: name }); }
+      const Count = (props) => jsx('span', { children: props.count });
+      return { apply() {} };
+    `)
+    assert.partialDeepStrictEqual(
+      buildComponentTree(source, 'Greeting', { name: 'Ada' }).tree as Record<string, unknown>,
+      { children: [{ kind: 'text', value: 'Ada' }] },
+    )
+    assert.partialDeepStrictEqual(
+      buildComponentTree(source, 'Count', { count: 3 }).tree as Record<string, unknown>,
+      { children: [{ kind: 'text', value: '3' }] },
+    )
+  })
+
+  it('marks dynamic children as opaque instead of guessing', () => {
+    const source = bundle(`
+      function Dynamic({ name }) { return jsx('div', { children: name.toUpperCase() }); }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Dynamic', { name: 'x' })
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'div',
+      children: [{ kind: 'opaque' }],
+    })
+  })
+
+  it('supports React.createElement with variadic children', () => {
+    const source = bundle(`
+      var React = require('react');
+      function Pair() { return React.createElement('div', null, React.createElement('b', null, 'one'), 'two'); }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Pair', {})
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'div',
+      children: [
+        { kind: 'element', type: 'b', children: [{ kind: 'text', value: 'one' }] },
+        { kind: 'text', value: 'two' },
+      ],
+    })
+  })
+
+  it('handles arrow components whose body is the expression', () => {
+    const source = bundle(`
+      const Chip = () => jsx('span', { children: 'chip' });
+      return { apply() {} };
+    `)
+    assert.partialDeepStrictEqual(
+      buildComponentTree(source, 'Chip', {}).tree as Record<string, unknown>,
+      { kind: 'element', type: 'span' },
+    )
+  })
+
+  it('resolves the statically-known branch of a conditional', () => {
+    const source = bundle(`
+      function Maybe() { return true ? jsx('div', {}) : jsx('span', {}); }
+      return { apply() {} };
+    `)
+    assert.partialDeepStrictEqual(
+      buildComponentTree(source, 'Maybe', {}).tree as Record<string, unknown>,
+      { kind: 'element', type: 'div' },
+    )
+  })
+
+  it('reports truncation when a component composition is too deep', () => {
+    // Self-referencing composition: each level inlines another component.
+    const source = bundle(`
+      function Loop() { return jsx(Loop2, {}); }
+      function Loop2() { return jsx(Loop, {}); }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Loop', {}, {
+      ...DEFAULT_TRANSPILE_BUDGET, maxDepth: 4, maxNodes: 6,
+    })
+    assert.equal(built.truncated, true)
+  })
+
+  it('handles the minified (0, n.jsx)(…) call shape', () => {
+    const source = `(()=>{var e={271:(e,t,r)=>{r.d(t,{apply:()=>a});var n=r(609);function s({title:e}){return(0,n.jsxs)("div",{children:[(0,n.jsx)("h3",{children:e}),(0,n.jsx)("button",{children:"登录"})]})}function a(e){e.slots.inject("settings.section",()=>e.slots.register({name:"settings.section",id:"subscription",order:92},s))}},609:e=>{e.exports={}}};window.__ModuleLoader__.load({id:"x",factory:e=>(0,e(271).apply)({})})})();`
+    const analyzed = analyzeBundle('x', source)
+    assert.equal(analyzed.registrations[0]?.componentName, 's')
+    // Minified destructuring `{title:e}` renames the prop: the static tree
+    // resolves structure and literals, and reports the renamed binding as
+    // dynamic (`prop:e`) — the runtime prop's original name is unrecoverable.
+    const built = buildComponentTree(source, 's', { title: '订阅' })
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'div',
+      children: [
+        { kind: 'element', type: 'h3', children: [{ kind: 'opaque', reason: 'prop:e' }] },
+        { kind: 'element', type: 'button', children: [{ kind: 'text', value: '登录' }] },
+      ],
+    })
+  })
+
+  it('returns null with a warning for an unknown component', () => {
+    const source = bundle(`return { apply() {} };`)
+    const built = buildComponentTree(source, 'Missing', {})
+    assert.equal(built.tree, null)
+    assert.ok(built.warnings.some(note => note.includes('Missing')))
+  })
+})

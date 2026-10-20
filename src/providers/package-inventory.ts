@@ -14,6 +14,8 @@ export interface HostBundleRow {
   readonly rowId: string
   readonly moduleName: string
   readonly meta?: unknown
+  /** Whether this row is enabled, when the Host reports it. */
+  readonly enabled?: boolean
 }
 
 /** One bundle record, as the Host's `pluginManager.listBundles()` returns it. */
@@ -151,6 +153,9 @@ function projectBundle(bundle: HostBundleInfo, localeTags: readonly string[]): I
   const rows: InventoryBundleRow[] = (bundle.rows ?? []).map(row => ({
     rowId: row.rowId,
     moduleName: row.moduleName,
+    // Row enabled state comes from the Host; default to true when absent
+    // because a declared row that the Host lists is expected to be active.
+    ...(row.enabled === undefined ? {} : { enabled: row.enabled }),
     ...displayText(row.meta, localeTags),
   }))
   return {

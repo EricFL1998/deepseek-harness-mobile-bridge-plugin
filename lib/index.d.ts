@@ -75,5 +75,8 @@ export { createBridgeHandler, writeReply } from './handler.ts';
 export { evaluateBundleSource } from './slots/evaluate.ts';
 export { createReactStub } from './slots/react-stub.ts';
 export { renderComponent, treeToSvg } from './slots/render-tree.ts';
+export { analyzeBundle, buildComponentTree, DEFAULT_TRANSPILE_BUDGET } from './slots/transpile.ts';
+export type { TranspiledBundle, TranspiledComponent, TranspiledRegistration, TranspiledTree, TranspileBudget } from './slots/transpile.ts';
+export { createTranspileProvider } from './providers/transpile.ts';
 /** Read this package's own version, for a standalone carrier's manifest. */
 export declare function packageVersion(): string;

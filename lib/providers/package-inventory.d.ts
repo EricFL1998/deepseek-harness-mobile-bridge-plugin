@@ -10,6 +10,8 @@ export interface HostBundleRow {
     readonly rowId: string;
     readonly moduleName: string;
     readonly meta?: unknown;
+    /** Whether this row is enabled, when the Host reports it. */
+    readonly enabled?: boolean;
 }
 /** One bundle record, as the Host's `pluginManager.listBundles()` returns it. */
 export interface HostBundleInfo {

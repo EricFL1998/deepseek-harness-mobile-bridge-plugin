@@ -115,6 +115,9 @@ Nested groups are flattened to dotted keys. An unavailable `locale` falls back t
 `slot` is `null` when the request did not narrow. Registrations sort by slot,
 then `order`, then id. `key` replaces `id` for keyed slots. `package` is the
 entry id whose bundle registered it. `render.kind` is `component` or `factory`.
+`origin` is `static` when the registration was read from the bundle's text
+without running it, or `evaluated` when the VM captured the call; older
+bridges omit it, and a client treats that as unknown.
 
 ### `describe { slot, id }`
 
@@ -154,6 +157,51 @@ One `registrations[]` entry, or `args/invalid`.
 
 `size` defaults to 24 and is clamped to the configured `maxIconSize`. `svg` is
 `null` when the component drew no shape; `warnings` then says why.
+
+### `dispatch { componentId, event, payload? }`
+
+```json
+{ "ok": true }
+```
+
+Delivers one native UI event to the plugin: `event` is `press`, `input`,
+`toggle`, or `submit`; `payload` is a JSON-safe object (unknown members are
+dropped with a warning). The bridge re-broadcasts it on the Host event bus as
+`ui/<componentId>/<event>` and queues a `client/refresh` transient message
+(`events/pending`), so the client re-pulls the component tree once the plugin
+has reacted. A composition without an event bus still answers `ok` and warns.
+
+## `transpile` (version 1)
+
+The static-first component tree: the bundle's text is analyzed — never
+executed — so this provider answers on a Host where `clientBundleScan` stays
+off. The tree uses the same `RenderNode` model as `render-tree`; a client
+needs one renderer for both.
+
+### `component-tree { componentId, props? }`
+
+```json
+{
+  "componentId": "dsh-plugin-subscription-oauth#subscription",
+  "tree": { "kind": "element", "type": "div", "key": null, "props": {}, "children": [ … ] },
+  "warnings": [],
+  "truncated": false
+}
+```
+
+- `componentId` is `<package>#<id>`: the package that ships `lib/client.js`,
+  and either a registration id (resolved to the component it registered) or
+  the component's own source name.
+- `props` resolves expressions that read the component's own props
+  (destructured names and `props.<name>` member reads). A prop the request did
+  not supply becomes `{ "kind": "opaque", "reason": "prop:<name>" }` — dynamic
+  data the plugin controls at runtime, not a resolution failure.
+- Everything the static pass cannot resolve (calls, state, spreads, computed
+  members) becomes an `opaque` node with its reason; nothing is guessed.
+- `truncated: true` means a depth/node budget stopped the walk; the tree is a
+  prefix and the client shows a "content truncated" notice.
+- Unknown package or component ids fail `args/invalid` with
+  `details.known` naming the ids this bundle offers.
 
 ## `package-inventory` (version 1)
 

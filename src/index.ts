@@ -11,6 +11,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { existsSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -20,6 +21,7 @@ import { webServerOf } from './host-services.ts'
 import { createBridgeHandler, writeReply } from './handler.ts'
 import { createEventQueue } from './events.ts'
 import { createEventsProvider } from './providers/events.ts'
+import { createSettingsProvider, type SettingsServiceFace } from './providers/settings.ts'
 import { ProviderRegistry } from './protocol/provider.ts'
 import { BRIDGE_BASE_PATH, BRIDGE_VERSION, EVENTS_PATH, MANIFEST_PATH, QUERY_PATH } from './protocol/types.ts'
 import {
@@ -28,6 +30,7 @@ import {
 import {
   createClientSlotsProvider,
 } from './providers/client-slots.ts'
+import { createTranspileProvider } from './providers/transpile.ts'
 import {
   createPackageInventoryProvider, type PluginInventoryFace, type PluginManagerFace,
 } from './providers/package-inventory.ts'
@@ -185,6 +188,22 @@ function installModulesPaths(): string[] {
     const at = entry.lastIndexOf(marker)
     if (at >= 0) roots.push(join(entry.slice(0, at), '@deepseek-ai', 'dsh', 'node_modules'))
   }
+  // Third-party plugins installed into a profile live under that profile's
+  // node_modules. The Host serves a prebuilt web client (no clientModules
+  // registry), so scanning these roots is the only way the phone can see the
+  // slots an installed plugin registers.
+  const home = process.env.DSH_HOME
+  if (home !== undefined) {
+    const profilesDir = join(home, 'profiles')
+    try {
+      for (const name of readdirSync(profilesDir)) {
+        const modules = join(profilesDir, name, 'node_modules')
+        if (existsSync(modules)) roots.push(modules)
+      }
+    } catch {
+      // No profiles directory: the installation roots already answered.
+    }
+  }
   return roots
 }
 
@@ -235,6 +254,28 @@ function assembleProviders(
     clientRoots: () => roots,
     executeBundles: config.clientBundleScan,
     localeTags: config.localeTags,
+    // `dispatch` re-broadcasts a native UI event on the Host bus and queues a
+    // refresh so the phone re-pulls the tree once the plugin has reacted.
+    notify: (kind, text) => { events.push(kind, text) },
+    emit: (event, payload) => {
+      try {
+        ;(ctx as { emit?: (name: string, payload: unknown) => void }).emit?.(event, payload)
+      } catch {
+        // A composition without an event bus simply never notifies the plugin.
+      }
+    },
+  }))
+
+  // The static-first component tree: reading a bundle's text never runs plugin
+  // code, so this provider answers on a phone Host where `clientBundleScan`
+  // stays off. Same RenderNode model as `render-tree`; one client renderer eats both.
+  registry.add(createTranspileProvider({
+    clientRoots: () => roots,
+    budget: {
+      maxSourceBytes: 8 * 1024 * 1024,
+      maxDepth: config.maxRenderDepth,
+      maxNodes: config.maxRenderNodes,
+    },
   }))
 
   registry.add(createHostSlotsProvider({
@@ -250,6 +291,12 @@ function assembleProviders(
     localeTags: config.localeTags,
   }))
 
+  // The phone renders the same generated form the browser does: the Host's
+  // settings service projects each plugin's Config schema into a field tree.
+  registry.add(createSettingsProvider({
+    settings: () => ctx.get('settings') as SettingsServiceFace | undefined,
+  }))
+  registry.add(createEventsProvider({ drain: () => events.drain() }))
   const allowlist: RpcAllowEntry[] = config.rpcAllowlist.map(entry => ({
     namespace: entry.namespace,
     method: entry.method,
@@ -411,6 +458,9 @@ export { createBridgeHandler, writeReply } from './handler.ts'
 export { evaluateBundleSource } from './slots/evaluate.ts'
 export { createReactStub } from './slots/react-stub.ts'
 export { renderComponent, treeToSvg } from './slots/render-tree.ts'
+export { analyzeBundle, buildComponentTree, DEFAULT_TRANSPILE_BUDGET } from './slots/transpile.ts'
+export type { TranspiledBundle, TranspiledComponent, TranspiledRegistration, TranspiledTree, TranspileBudget } from './slots/transpile.ts'
+export { createTranspileProvider } from './providers/transpile.ts'
 
 /** Read this package's own version, for a standalone carrier's manifest. */
 export function packageVersion(): string {

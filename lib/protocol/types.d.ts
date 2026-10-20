@@ -132,11 +132,17 @@ export interface SlotRegistration {
     readonly placement?: string;
     /** Locale namespace the label resolves through, when declared. */
     readonly locale?: string;
-    /** Component identity for `render-tree` / `icon-svg`. */
+    /** Component identity for `render-tree` / `icon-svg` / `transpile`. */
     readonly render?: {
         readonly kind: 'component' | 'factory';
         readonly componentId: string;
     };
+    /**
+     * How this registration was read: `static` means the bundle's text was
+     * analyzed without running it, `evaluated` means the VM captured the call.
+     * Absent on responses from older plugins; clients treat it as unknown.
+     */
+    readonly origin?: 'static' | 'evaluated';
 }
 /** `client-slots` / `list` data. */
 export interface SlotListData {
@@ -170,6 +176,19 @@ export interface RenderTreeData {
     readonly componentId: string;
     readonly tree: RenderNode | null;
 }
+/** `transpile` / `component-tree` data. */
+export interface ComponentTreeData {
+    readonly componentId: string;
+    /** The declared structure, or null when the component is unknown/unreadable. */
+    readonly tree: RenderNode | null;
+    readonly warnings: readonly string[];
+    /** True when a budget stopped the walk; the tree is then a prefix. */
+    readonly truncated: boolean;
+}
+/** `client-slots` / `dispatch` data. */
+export interface DispatchData {
+    readonly ok: true;
+}
 /** `client-slots` / `icon-svg` data. */
 export interface IconSvgData {
     readonly componentId: string;
@@ -202,6 +221,8 @@ export interface InventoryBundleRow {
     readonly title?: string;
     readonly description?: string;
     readonly icon?: string;
+    /** Whether this row is enabled; absent means the Host did not report it. */
+    readonly enabled?: boolean;
 }
 /** `package-inventory` / `rows` row, projected from the Loader inventory. */
 export interface InventoryRow {

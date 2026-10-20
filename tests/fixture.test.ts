@@ -41,12 +41,13 @@ test('the fixture manifest names exactly the providers this package registers', 
   // The four ids and their capability names are the contract; the order is the
   // registration order the plugin documents.
   assert.deepEqual(manifest.providers.map(provider => provider.id), [
-    'client-assets', 'client-slots', 'package-inventory', 'rpc',
+    'client-assets', 'client-slots', 'transpile', 'package-inventory', 'rpc',
   ])
   assert.deepEqual(manifest.providers[0]!.capabilities, ['boot-graph', 'module-source', 'locale'])
-  assert.deepEqual(manifest.providers[1]!.capabilities, ['list', 'describe', 'render-tree', 'icon-svg'])
-  assert.deepEqual(manifest.providers[2]!.capabilities, ['bundles', 'rows', 'meta-icon'])
-  assert.deepEqual(manifest.providers[3]!.capabilities, ['invoke'])
+  assert.deepEqual(manifest.providers[1]!.capabilities, ['list', 'describe', 'render-tree', 'icon-svg', 'dispatch'])
+  assert.deepEqual(manifest.providers[2]!.capabilities, ['component-tree'])
+  assert.deepEqual(manifest.providers[3]!.capabilities, ['bundles', 'rows', 'meta-icon'])
+  assert.deepEqual(manifest.providers[4]!.capabilities, ['invoke'])
   for (const provider of manifest.providers) assert.equal(provider.version, 1)
 })
 

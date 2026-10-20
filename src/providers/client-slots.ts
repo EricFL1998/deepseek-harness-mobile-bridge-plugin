@@ -14,7 +14,7 @@ import {
   BridgeFailure, optionalObject, optionalPositiveInt, optionalString, requiredString,
   type Provider, type WarningSink,
 } from '../protocol/provider.ts'
-import type { IconSvgData, RenderTreeData, SlotListData, SlotRegistration } from '../protocol/types.ts'
+import type { DispatchData, IconSvgData, RenderTreeData, SlotListData, SlotRegistration } from '../protocol/types.ts'
 import { projectJson } from '../protocol/json.ts'
 import { evaluateBundleFile, type CapturedComponent, type EvaluatedBundle } from '../slots/evaluate.ts'
 import { extractStaticRegistrations, resolveStaticLabel, toSlotRegistration } from '../slots/static-slots.ts'
@@ -69,6 +69,18 @@ export interface ClientSlotsOptions {
   readonly maxClientBundles?: number
   /** Locale tags to read the official roster's text with, preferred first. */
   readonly localeTags?: readonly string[]
+  /**
+   * Push one transient message toward the phone. `dispatch` uses it to confirm
+   * an interaction reached the Host, and to surface the requested refresh so
+   * the client re-pulls the component tree.
+   */
+  readonly notify?: (kind: 'toast' | 'client/refresh', text: string) => void
+  /**
+   * Deliver one UI event to a plugin through the Host event bus
+   * (`ctx.emit('ui/<componentId>/<event>', payload)`), so a plugin that
+   * listens with `ctx.on` learns about the interaction.
+   */
+  readonly emit?: (event: string, payload: Readonly<Record<string, unknown>>) => void
 }
 
 /** One cached evaluation, keyed by entry id and bundle revision. */
@@ -212,9 +224,19 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
     entries: readonly CachedEvaluation[],
     componentId: string,
   ): CapturedComponent | undefined => {
+    // Try the exact componentId first (new format: entryId#id).
     for (const entry of entries) {
       const found = entry.components.get(componentId)
       if (found !== undefined) return found
+    }
+    // Fall back to the bare id for statically-extracted registrations
+    // (old format where componentId did not include the entryId prefix).
+    const bareId = componentId.includes('#') ? componentId.slice(componentId.indexOf('#') + 1) : componentId
+    if (bareId !== componentId) {
+      for (const entry of entries) {
+        const found = entry.components.get(bareId)
+        if (found !== undefined) return found
+      }
     }
     return undefined
   }
@@ -286,6 +308,7 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
               // The native placement is decided here so clients do not each keep a
               // slot-to-screen table of their own.
               placement: placementOf(registration.slot).placement,
+              origin: 'evaluated' as const,
               ...(registration.locale === undefined ? {} : { locale: registration.locale }),
               render: { kind: registration.kind, componentId: registration.componentId },
             })
@@ -369,7 +392,12 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
       'icon-svg': async (args, warnings): Promise<IconSvgData> => {
         const componentId = requiredString(args, 'componentId')
         const size = optionalPositiveInt(args, 'size', 24, options.maxIconSize)
-        const artwork = OFFICIAL_ARTWORK[componentId]
+        // Registration identities look like `<package>#<slot>`; the artwork table
+        // is keyed by the registration id (`subagent`, `web-search`, …). Try the
+        // full identity first, then its suffix, so official config rows keep their
+        // artwork without evaluating any bundle.
+        const artworkKey = componentId.slice(componentId.lastIndexOf('#') + 1)
+        const artwork = OFFICIAL_ARTWORK[componentId] ?? OFFICIAL_ARTWORK[artworkKey]
         if (artwork !== undefined) {
           // 官方条目的图形是固定 artwork，不来自被评估的 bundle。
           return { componentId, size, svg: artwork }
@@ -377,18 +405,63 @@ export function createClientSlotsProvider(options: ClientSlotsOptions): Provider
         const entries = await evaluateAll(warnings)
         const found = findComponent(entries, componentId)
         if (found === undefined) {
-          throw new BridgeFailure('args/invalid', `no captured component ${componentId}`, 200, {
-            known: entries.flatMap(entry => [...entry.components.keys()]),
+          // 组件未捕获时返回 null SVG，让客户端使用默认图标。
+          // 这是一个正常路径：静态抽取的注册没有可渲染的组件。
+          return { componentId, size, svg: null }
+        }
+        try {
+          const rendered = renderComponent(found.component, { size }, options.renderBudget)
+          const converted = treeToSvg(rendered.tree, size, options.iconViewBox)
+          for (const note of [...rendered.warnings, ...converted.warnings]) warnings.warn(note)
+          return { componentId, size, svg: converted.svg }
+        } catch (error) {
+          // 渲染失败不阻塞目录：返回 null 让客户端使用默认图标。
+          warnings.warn(`icon ${componentId}: render failed: ${(error as Error).message}`)
+          return { componentId, size, svg: null }
+        }
+      },
+
+      /**
+       * Deliver one native UI event to the plugin.
+       *
+       * The phone never executes plugin JavaScript: a tap, an edit, or a toggle
+       * arrives here as data, the bridge re-broadcasts it on the Host event bus
+       * as `ui/<componentId>/<event>` (so a plugin listening with `ctx.on` learns
+       * about it), and a `client/refresh` message is queued for the phone so the
+       * component's tree is re-pulled once the plugin has reacted.
+       */
+      dispatch: async (args, warnings): Promise<DispatchData> => {
+        const componentId = requiredString(args, 'componentId')
+        const event = requiredString(args, 'event')
+        if (!EVENT_NAMES.has(event)) {
+          throw new BridgeFailure('args/invalid', `event must be one of ${[...EVENT_NAMES].join(', ')}`, 200, {
+            known: [...EVENT_NAMES].sort(),
           })
         }
-        const rendered = renderComponent(found.component, { size }, options.renderBudget)
-        const converted = treeToSvg(rendered.tree, size, options.iconViewBox)
-        for (const note of [...rendered.warnings, ...converted.warnings]) warnings.warn(note)
-        return { componentId, size, svg: converted.svg }
+        const payload = optionalObject(args, 'payload') ?? {}
+        const projected = projectJson(payload, 'payload')
+        for (const path of projected.dropped) warnings.warn(`dropped payload member ${path}`)
+        const body = (projected.value ?? {}) as Readonly<Record<string, unknown>>
+        if (options.emit !== undefined) {
+          try {
+            options.emit(`ui/${componentId}/${event}`, body)
+          } catch (error) {
+            warnings.warn(`ui event delivery failed: ${(error as Error).message}`)
+          }
+        } else {
+          warnings.warn('this Host composition has no event bus; the plugin was not notified')
+        }
+        // The phone re-pulls the tree on its next poll; the refresh message makes
+        // the update visible without waiting for the poll interval.
+        options.notify?.('client/refresh', componentId)
+        return { ok: true }
       },
     },
   }
 }
+
+/** Events a native renderer may send back through `dispatch`. */
+const EVENT_NAMES = new Set(['press', 'input', 'toggle', 'submit'])
 
 /**
  * Order registrations the way the client dispatches them: slot, then declared

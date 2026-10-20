@@ -14,7 +14,13 @@
       {
         "id": "client-slots",
         "version": 1,
-        "capabilities": ["list", "describe", "render-tree", "icon-svg"],
+        "capabilities": ["list", "describe", "render-tree", "icon-svg", "dispatch"],
+        "readOnly": true
+      },
+      {
+        "id": "transpile",
+        "version": 1,
+        "capabilities": ["component-tree"],
         "readOnly": true
       },
       {
@@ -62,6 +68,7 @@
         "label": "Agent 循环",
         "package": "@deepseek-ai/dsh-client-ui-settings-agent-loop",
         "locale": "settings.agentLoop",
+        "origin": "evaluated",
         "render": { "kind": "component", "componentId": "agent-loop" }
       },
       {
@@ -93,6 +100,21 @@
         }
       ]
     }
+  },
+  "componentTree": {
+    "componentId": "dsh-plugin-subscription-oauth#subscription",
+    "tree": {
+      "kind": "element",
+      "type": "div",
+      "key": null,
+      "props": { "className": "sub-card" },
+      "children": [
+        { "kind": "element", "type": "h3", "key": null, "props": {}, "children": [{ "kind": "opaque", "reason": "prop:title" }] },
+        { "kind": "element", "type": "button", "key": null, "props": {}, "children": [{ "kind": "text", "value": "登录" }] }
+      ]
+    },
+    "warnings": [],
+    "truncated": false
   },
   "iconSvg": {
     "componentId": "agent-loop",
