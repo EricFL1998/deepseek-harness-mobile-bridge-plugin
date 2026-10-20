@@ -9,3 +9,6 @@ node_modules/
 # GitHub tarball IS the release artifact. A tarball install runs no build step,
 # so the built output has to be in the tree or the installed plugin has no entry.
 _tmp/
+
+# local probes
+.probe-*.mjs
