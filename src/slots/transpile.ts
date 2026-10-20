@@ -1536,6 +1536,26 @@ function propJson(value: StaticValue): unknown {
   }
 }
 
+/**
+ * The subset of one element's props that may be forwarded into an inlined child.
+ *
+ * `propJson` writes `element`/`opaque`/… values as `<kind:…>` placeholder text.
+ * That text is a *report*, not data: forwarding it would make a wrapper component
+ * render the placeholder as if the plugin had written it, which is worse than the
+ * honest "nothing here" the opaque node produces.
+ */
+function forwardedProps(props: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(props)) {
+    if (typeof value === 'string' && PLACEHOLDER_TEXT.test(value)) continue
+    out[key] = value
+  }
+  return out
+}
+
+/** Matches the placeholder text `propJson` emits for a value it could not resolve. */
+const PLACEHOLDER_TEXT = /^<(?:opaque|element|component|children|function|undefined|dynamic)[:>]/
+
 /** Decode the escape sequences of one string token body. */
 function decodeEscapes(text: string): string {
   return text
@@ -1623,7 +1643,13 @@ function renderValue(
         const name = value.e.type.slice('component:'.length)
         const shape = model.components.get(name)
         if (shape !== undefined && shape.bodyStart >= 0) {
-          const inner = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, envOf(shape, {}))
+          // The element's own props are the inlined component's props: a wrapper
+          // that forwards `children`/`cells` keeps them visible one level down.
+          // Placeholder strings (`<opaque:…>`) are *not* data and are dropped, or
+          // the wrapper would print them as if the plugin had written that text.
+          const inner = readStaticValue(
+            model.cursor, shape.bodyStart, shape.bodyEnd, model, envOf(shape, forwardedProps(value.e.props)),
+          )
           const rendered = renderValue(inner, model, env, counter, depth + 1)
           return { ...value.e, children: rendered === null ? value.e.children : [rendered] }
         }
