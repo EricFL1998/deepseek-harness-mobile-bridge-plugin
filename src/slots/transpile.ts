@@ -2559,7 +2559,7 @@ export function buildComponentTree(
   const env: PropEnv = evaluateBody(model.cursor, model, shape, props)
   const counter = { nodes: 0, truncated: false }
   const value = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, env)
-  const tree = renderValue(value, model, env, counter, 0)
+  const tree = normalizeTree(renderValue(value, model, env, counter, 0), warnings)
   return { componentId: componentName, tree, warnings, truncated: counter.truncated }
 }
 
@@ -2624,6 +2624,24 @@ function inlineNode(
   }
 }
 
+/**
+ * Drop empty child slots from a rendered tree.
+ *
+ * A child that turned out empty arrives as `null`/`undefined`; JSON has no
+ * `undefined`, so it would serialize as a literal `null` child and the client's
+ * strict decoder rejects the whole tree. The tree is cleaned once, here, instead
+ * of relying on every producer to avoid the hole.
+ */
+function normalizeTree(node: RenderNode | null, warnings: string[]): RenderNode | null {
+  if (node === null || node === undefined) return null
+  if (node.kind !== 'element') return node
+  const children: RenderNode[] = []
+  for (const child of node.children ?? []) {
+    const normalized = normalizeTree(child as RenderNode | null, warnings)
+    if (normalized !== null) children.push(normalized)
+  }
+  return { ...node, children }
+}
 /**
  * Turn one statically-read value into a `RenderNode`, inlining component
  * references until the budget stops the walk.

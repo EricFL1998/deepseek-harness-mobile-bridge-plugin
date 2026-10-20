@@ -159,7 +159,7 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
         for (const note of built.warnings) warnings.warn(note)
         return {
           componentId,
-          tree: built.tree,
+          tree: sanitizeTree(built.tree),
           warnings: built.warnings,
           truncated: built.truncated,
         }
@@ -219,4 +219,28 @@ async function packageDirs(root: string): Promise<{ name: string; dir: string }[
     }
   }
   return out
+}
+
+/**
+ * Drop empty slots from a render tree before it goes on the wire.
+ *
+ * A child that rendered to nothing is `null` in JavaScript, and JSON cannot carry
+ * `undefined`: either one serializes as a literal `null` array element, which the
+ * client's strict node decoder rejects — the whole page then reads as unsupported.
+ * The wire model is "no child here", so empty slots are removed at the boundary.
+ *
+ * @param node the tree (or a subtree) about to be returned.
+ * @returns the same tree with object children only.
+ */
+function sanitizeTree<T>(node: T): T | null {
+  if (node === null || node === undefined) return null
+  if (typeof node !== 'object') return node
+  const record = node as Record<string, unknown>
+  if (!Array.isArray(record.children)) return node
+  const children: unknown[] = []
+  for (const child of record.children) {
+    if (child === null || child === undefined || typeof child !== 'object') continue
+    children.push(sanitizeTree(child))
+  }
+  return { ...record, children } as T
 }
