@@ -425,6 +425,8 @@ interface BundleModel {
   readonly registrations: TranspiledRegistration[]
   readonly components: Map<string, ComponentShape>
   readonly warnings: string[]
+  /** Host data injected for every component in this render (data RPC results). */
+  readonly injected: Readonly<Record<string, unknown>>
   readonly budget: TranspileBudget
   /**
    * Locale dictionaries written as top-level string-object literals
@@ -500,7 +502,8 @@ export function bundleSourceDigest(source: string): string {
  */
 function buildModel(source: string, budget: TranspileBudget, warnings: string[]): BundleModel {
   const cursor = new Cursor(tokenize(source))
-  const model: BundleModel = {
+  const model: BundleModel & { injected: Readonly<Record<string, unknown>> } = {
+    injected: {},
     cursor,
     source,
     jsxNames: new Set(),
@@ -2577,6 +2580,8 @@ export function buildComponentTree(
   const warnings: string[] = []
   const model = buildModel(source, budget, warnings)
   chooseDictionary(model, localeTags)
+  // 调用方取回的 Host 数据：对本页每个组件（含内联的子组件）都可见。
+  ;(model as { injected: Readonly<Record<string, unknown>> }).injected = props
   const shape = model.components.get(componentName)
   if (shape === undefined || shape.bodyStart < 0) {
     return {
@@ -2596,7 +2601,7 @@ export function buildComponentTree(
     tree,
     warnings,
     truncated: counter.truncated,
-    data: extractDataSources(model.cursor, shape),
+    data: collectBundleDataSources(model),
   }
 }
 
@@ -2645,38 +2650,19 @@ export function extractDataSources(
     // 只把「读」的方法当数据源：checkin、setAutoOn 这类调用有副作用，客户端不能把
     // 它们当刷新数据反复打。
     if (!isReadMethod(method)) continue
+    if (seen.has(method)) continue
+    seen.add(method)
     const close = cursor.matchDelimiter(at + 1)
     const payload = readLiteralPayload(cursor, at + 2, close)
-    // The state this method feeds is the next `set<Name>(` in the same body:
-    // official components always follow the fetch with a setter immediately.
-    let state = ""
-    for (let scan = close + 1; scan < Math.min(close + 60, shape.bodyClose); scan += 1) {
-      const candidate = cursor.tokens[scan]
-      if (candidate === undefined || candidate.kind !== "ident") continue
-      const match = /^set([A-Z]\w*)$/.exec(candidate.value)
-      if (match === null) continue
-      const next = cursor.tokens[scan + 1]
-      if (next?.kind === "punct" && next.value === "(") {
-        const head = match[1]!
-        state = head.charAt(0).toLowerCase() + head.slice(1)
-        break
-      }
-    }
-    if (state === "" || seen.has(state)) continue
-    seen.add(state)
+    // state 名约定为方法名驼峰（`status` → `status`、`auto-state` → `autoState`）。
+    // 官方插件的 useState 变量几乎总与方法同名，客户端以同名 prop 注入即可；
+    // 按 setter 反推在多个取数调用并存时会互相错配，反而更不可靠。
+    const state = method.replace(/-([a-z])/g, (_, ch: string) => ch.toUpperCase())
+    if (state === "") continue
     found.push(payload === undefined ? { state, method } : { state, method, payload })
   }
   return found
 }
-
-/**
- * Read a call payload when it is an object literal.
- *
- * @param cursor - token stream.
- * @param from - token index of the method string.
- * @param close - index of the call's closing paren.
- * @returns the static object, or undefined when the argument is computed.
- */
 function readLiteralPayload(
   cursor: Cursor,
   from: number,
@@ -2737,7 +2723,13 @@ function inlineNode(
     shape.bodyStart,
     shape.bodyEnd,
     model,
-    evaluateBody(model.cursor, model, shape, forwardedProps(node.props)),
+    evaluateBody(
+      model.cursor,
+      model,
+      shape,
+      // 注入的 Host 数据对内联子组件同样有效：用量等数值在子组件里算。
+      forwardedProps(node.props),
+    ),
   )
   const rendered = renderValue(inner, model, env, counter, depth + 1)
   if (rendered === null) return node
@@ -2919,3 +2911,26 @@ const READ_METHOD_PATTERN =
 /** Names that mutate, even when they look like a query. */
 const WRITE_METHOD_PATTERN =
   /^(?:set|add|remove|delete|create|update|login|logout|checkin|submit|start|stop|toggle|enable|disable|connect|disconnect|refresh|sync|save|upload|install|uninstall|run|exec|send|post|put|patch|cancel|resume|revoke|grant)/i
+
+/**
+ * Every read-only data source any component in the bundle fetches.
+ *
+ * A page's values often come from its child components (the usage panel lives in a
+ * provider card, not in the section that renders it), so the union is what a client
+ * must fetch before rendering.
+ *
+ * @param model - the parsed bundle.
+ * @returns one entry per distinct state name.
+ */
+export function collectBundleDataSources(model: BundleModel): TranspiledDataSource[] {
+  const found: TranspiledDataSource[] = []
+  const seen = new Set<string>()
+  for (const shape of model.components.values()) {
+    for (const source of extractDataSources(model.cursor, shape)) {
+      if (seen.has(source.state)) continue
+      seen.add(source.state)
+      found.push(source)
+    }
+  }
+  return found
+}

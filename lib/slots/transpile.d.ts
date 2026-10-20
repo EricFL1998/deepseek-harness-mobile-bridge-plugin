@@ -158,6 +158,37 @@ interface ComponentShape {
     readonly bodyClose: number;
     readonly offset: number;
 }
+/** Everything one bundle pass keeps. */
+interface BundleModel {
+    readonly cursor: Cursor;
+    readonly source: string;
+    readonly jsxNames: Set<string>;
+    readonly registrations: TranspiledRegistration[];
+    readonly components: Map<string, ComponentShape>;
+    readonly warnings: string[];
+    /** Host data injected for every component in this render (data RPC results). */
+    readonly injected: Readonly<Record<string, unknown>>;
+    readonly budget: TranspileBudget;
+    /**
+     * Locale dictionaries written as top-level string-object literals
+     * (`const en = { nav: 'Subscriptions', … }`), keyed by their binding name.
+     *
+     * A client bundle carries its copy inside the bundle itself and reads it
+     * through a `t(key)` helper, so the text a component shows is a plain lookup
+     * the static pass can perform — no execution needed.
+     */
+    readonly dictionaries: Map<string, Map<string, string>>;
+    /** The dictionary `t(key)` resolves through, chosen from the locale tags. */
+    dictionary?: Map<string, string>;
+    /** Binding name of {@link dictionary}; reported so a client knows the language. */
+    dictionaryName?: string;
+    /**
+     * Module-level `const` bindings whose initializer is plain JSON
+     * (`const styles = { … }`). Components read these freely; without them every
+     * `styles.name` is an opaque member read.
+     */
+    readonly globals: Map<string, unknown>;
+}
 /**
  * Parse one compiled client bundle into registrations and component shapes.
  *
@@ -214,4 +245,15 @@ export interface TranspiledDataSource {
  * @returns one entry per discovered data source, in source order.
  */
 export declare function extractDataSources(cursor: Cursor, shape: ComponentShape): TranspiledDataSource[];
+/**
+ * Every read-only data source any component in the bundle fetches.
+ *
+ * A page's values often come from its child components (the usage panel lives in a
+ * provider card, not in the section that renders it), so the union is what a client
+ * must fetch before rendering.
+ *
+ * @param model - the parsed bundle.
+ * @returns one entry per distinct state name.
+ */
+export declare function collectBundleDataSources(model: BundleModel): TranspiledDataSource[];
 export {};
