@@ -376,4 +376,34 @@ describe('data binding', () => {
       kind: 'element', type: 'span', props: { style: { fontWeight: 600 } },
     })
   })
+
+  it('treats the third jsx argument as the key, not a child', () => {
+    // Production jsx emits `jsx(type, props, key)`; reading the key as a child
+    // put a list key where the card should be.
+    const source = bundle(`
+      function Card(props) { return jsx('span', { children: props.label }); }
+      function List(props) {
+        return jsx('div', { children: props.rows.map(row => jsx(Card, { label: row.name }, row.id)) });
+      }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'List', { rows: [{ id: 'a', name: 'first' }] })
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'div',
+      children: [{ kind: 'element', type: 'span', children: [{ kind: 'text', value: 'first' }] }],
+    })
+  })
+
+  it('inlines a component that sits inside another component children', () => {
+    const source = bundle(`
+      function Badge(props) { return jsx('b', { children: props.text }); }
+      function Card(props) { return jsx('div', { children: jsx(Badge, { text: props.title }) }); }
+      return { apply() {} };
+    `)
+    const built = buildComponentTree(source, 'Card', { title: 'hello' })
+    assert.partialDeepStrictEqual(built.tree as Record<string, unknown>, {
+      kind: 'element', type: 'div',
+      children: [{ kind: 'element', type: 'b', children: [{ kind: 'text', value: 'hello' }] }],
+    })
+  })
 })

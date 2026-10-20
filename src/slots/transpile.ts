@@ -1579,7 +1579,7 @@ function readStaticValue(
       // A translate helper call resolves through the bundle's own dictionary:
       // `t('nav')` is a plain table lookup, so the text a card shows is static
       // data even though the expression is a call.
-      const translated = readTranslateCall(cursor, start, end, model)
+      const translated = readTranslateCall(cursor, start, end, model, env)
       if (translated !== undefined) return translated
       // Calls whose callee is not the JSX runtime are not statically known.
       return { t: 'opaque', r: 'call-expression' }
@@ -2219,6 +2219,7 @@ function readTranslateCall(
   start: number,
   end: number,
   model: BundleModel,
+  env: PropEnv,
 ): StaticValue | undefined {
   const dictionary = model.dictionary
   if (dictionary === undefined) return undefined
@@ -2239,7 +2240,7 @@ function readTranslateCall(
   if (template === undefined) return { t: 'opaque', r: `untranslated:${key}` }
   const params = args[1] === undefined
     ? {}
-    : readStaticParams(cursor, args[1][0], args[1][1], model)
+    : readStaticParams(cursor, args[1][0], args[1][1], model, env)
   const text = template.replace(/\{(\w+)\}/g, (match: string, name: string) => {
     const value = params[name]
     return value === undefined ? match : String(value)
@@ -2253,6 +2254,7 @@ function readStaticParams(
   start: number,
   end: number,
   model: BundleModel,
+  env: PropEnv,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (cursor.tokens[start]?.value !== '{') return out
@@ -2260,7 +2262,7 @@ function readStaticParams(
     const key = cursor.tokens[a]
     if (key === undefined || (key.kind !== 'ident' && key.kind !== 'string')) continue
     if (cursor.tokens[a + 1]?.value !== ':') continue
-    const value = readStaticValue(cursor, a + 2, b, model, emptyEnv())
+    const value = readStaticValue(cursor, a + 2, b, model, env)
     if (value.t === 'value') out[key.value] = value.v
     else if (value.t === 'text') out[key.value] = value.text
   }
@@ -2316,7 +2318,11 @@ function readIdentifier(name: string, env: PropEnv): StaticValue {
 }
 
 /**
- * Read one `_jsx(type, props)` / `_jsxs(type, props, key)` call into an element.
+ * Read one `jsx(type, props, key)` / `jsxs(type, props, key)` call into an element.
+ *
+ * The third argument is React's **key**, not a child: a bundler emits
+ * `jsx(ProviderCard, { … }, provider.provider)` for a list, and reading that key
+ * as a child put the provider id in place of the card.
  */
 function readJsxCall(
   cursor: Cursor,
@@ -2328,7 +2334,7 @@ function readJsxCall(
 ): StaticValue {
   const close = cursor.matchDelimiter(start + 1) - 1
   const args = splitTopLevel(cursor, start + 2, close)
-  return elementFromArgs(cursor, args, model, env, depth, close)
+  return elementFromArgs(cursor, args, model, env, depth, close, 'jsx')
 }
 
 /**
@@ -2357,6 +2363,7 @@ function elementFromArgs(
   env: PropEnv,
   depth: number,
   closeAt: number,
+  runtime: 'jsx' | 'createElement' = 'createElement',
 ): StaticValue {
   if (args.length === 0) return { t: 'opaque', r: 'jsx-no-type' }
   const typeValue = readStaticValue(cursor, args[0]![0], args[0]![1], model, env, depth + 1)
@@ -2368,6 +2375,10 @@ function elementFromArgs(
 
   const props: Record<string, unknown> = {}
   let children: RenderNode[] = []
+  if (process.env.DEBUG_ELEM && type.startsWith('component:')) {
+    const texts = args.map(([a, b]) => cursor.tokens.slice(a, Math.min(b, a + 6)).map(x => x.value).join(' '))
+    console.error('ELEM', type, 'argc=', args.length, 'args=', JSON.stringify(texts).slice(0, 200))
+  }
   if (args.length >= 2) {
     const propsSpan = args[1]!
     const propsToken = cursor.tokens[propsSpan[0]]
@@ -2398,12 +2409,22 @@ function elementFromArgs(
     }
   }
   // `createElement(type, props, child1, child2, …)`: trailing args are children.
-  for (const span of args.slice(2)) {
-    children.push(...childrenOf(readStaticValue(cursor, span[0], span[1], model, env, depth + 1)))
+  // `jsx(type, props, key)`: the third arg is React's key, never a child.
+  const keySpan = runtime === 'jsx' ? args[2] : undefined
+  let key = null
+  if (keySpan !== undefined) {
+    const keyValue = readStaticValue(cursor, keySpan[0], keySpan[1], model, env, depth + 1)
+    const raw = jsonOf(keyValue)?.value
+    if (typeof raw === 'string' || typeof raw === 'number') key = String(raw)
+  }
+  if (runtime === 'createElement') {
+    for (const span of args.slice(2)) {
+      children.push(...childrenOf(readStaticValue(cursor, span[0], span[1], model, env, depth + 1)))
+    }
   }
   return {
     t: 'element',
-    e: { kind: 'element', type, key: null, props, children },
+    e: { kind: 'element', type, key, props, children },
   }
 }
 
@@ -2543,6 +2564,67 @@ export function buildComponentTree(
 }
 
 /**
+ * Inline the components one rendered element's children still carry.
+ *
+ * Children are read as nodes while the tree is being read, so a `<ProviderCard/>`
+ * inside a `.map()` is a node whose type is `component:…` — it needs the same
+ * inlining a component at the root gets, or a list of cards collapses into empty
+ * shells.
+ */
+function inlineChildren(
+  children: readonly RenderNode[],
+  model: BundleModel,
+  env: PropEnv,
+  counter: { nodes: number; truncated: boolean },
+  depth: number,
+): RenderNode[] {
+  return children.map(child => inlineNode(child, model, env, counter, depth))
+}
+
+/** Inline one already-read node when it is a component reference. */
+function inlineNode(
+  node: RenderNode,
+  model: BundleModel,
+  env: PropEnv,
+  counter: { nodes: number; truncated: boolean },
+  depth: number,
+): RenderNode {
+  if (node.kind !== 'element') return node
+  const type = node.type ?? ''
+  if (!type.startsWith('component:')) {
+    if (node.children.length === 0) return node
+    return { ...node, children: inlineChildren(node.children, model, env, counter, depth) }
+  }
+  const name = type.slice('component:'.length)
+  const shape = model.components.get(name)
+  if (shape === undefined || shape.bodyStart < 0) return node
+  counter.nodes += 1
+  if (counter.nodes > model.budget.maxNodes || depth > model.budget.maxDepth) {
+    counter.truncated = true
+    return { kind: 'opaque', reason: counter.nodes > model.budget.maxNodes ? 'node-budget' : 'depth-budget' }
+  }
+  const inner = readStaticValue(
+    model.cursor,
+    shape.bodyStart,
+    shape.bodyEnd,
+    model,
+    evaluateBody(model.cursor, model, shape, forwardedProps(node.props)),
+  )
+  const rendered = renderValue(inner, model, env, counter, depth + 1)
+  if (rendered === null) return node
+  if (rendered.kind === 'element') {
+    return { ...rendered, key: node.key ?? rendered.key }
+  }
+  return {
+    kind: 'element',
+    type,
+    key: node.key,
+    props: {},
+    children: [rendered],
+  }
+}
+
+/**
  * Turn one statically-read value into a `RenderNode`, inlining component
  * references until the budget stops the walk.
  */
@@ -2554,6 +2636,7 @@ function renderValue(
   depth: number,
 ): RenderNode | null {
   counter.nodes += 1
+  if (process.env.DEBUG_RENDER && value.t === 'element') console.error('RENDER-ELEMENT', value.e.type, value.e.children?.length ?? 0)
   if (counter.nodes > model.budget.maxNodes) {
     counter.truncated = true
     return { kind: 'opaque', reason: 'node-budget' }
@@ -2578,10 +2661,13 @@ function renderValue(
             model.cursor, shape.bodyStart, shape.bodyEnd, model, evaluateBody(model.cursor, model, shape, forwardedProps(value.e.props)),
           )
           const rendered = renderValue(inner, model, env, counter, depth + 1)
-          return { ...value.e, children: rendered === null ? value.e.children : [rendered] }
+          return {
+            ...value.e,
+            children: rendered === null ? inlineChildren(value.e.children, model, env, counter, depth) : [rendered],
+          }
         }
       }
-      return value.e
+      return { ...value.e, children: inlineChildren(value.e.children, model, env, counter, depth) }
     case 'text': return { kind: 'text', value: value.text }
     case 'value': {
       if (value.v === null || value.v === undefined || typeof value.v === 'boolean') return null
