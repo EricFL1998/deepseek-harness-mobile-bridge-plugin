@@ -93,6 +93,13 @@ export interface TranspiledTree {
   readonly warnings: readonly string[]
   /** True when a budget stopped the walk; the tree is then a prefix. */
   readonly truncated: boolean
+  /**
+   * Host data this component fetches (`call("<method>")` paired with a setter).
+   *
+   * A client fills these with the method's result before rendering, so the tree can
+   * show values the static pass cannot compute.
+   */
+  readonly data: readonly TranspiledDataSource[]
 }
 
 /** Ceilings applied to one parse / render. */
@@ -1224,7 +1231,7 @@ function evaluateBody(
       continue
     }
     if (token.kind === 'keyword' && (token.value === 'const' || token.value === 'let' || token.value === 'var')) {
-      at = readLocalDeclaration(cursor, model, at, shape.bodyClose, env, locals)
+      at = readLocalDeclaration(cursor, model, at, shape.bodyClose, env, locals, props)
       continue
     }
     at += 1
@@ -1243,6 +1250,7 @@ function readLocalDeclaration(
   limit: number,
   env: PropEnv,
   locals: Map<string, unknown>,
+  injected: Readonly<Record<string, unknown>> = {},
 ): number {
   let at = declareAt + 1
   while (at < limit) {
@@ -1282,7 +1290,12 @@ function readLocalDeclaration(
         for (let slot = at + 1; slot < close; slot += 1) {
           const name = cursor.tokens[slot]
           if (name?.kind === 'ident') {
-            if (index === 0) locals.set(name.value, initial.value)
+            if (index === 0) {
+              // A client that already fetched this state's Host data passes it as a
+              // prop of the same name; that value wins over the declaration's initial.
+              const injectedValue = injected[name.value]
+              locals.set(name.value, injectedValue === undefined ? initial.value : injectedValue)
+            }
             index += 1
           }
         }
@@ -2571,13 +2584,112 @@ export function buildComponentTree(
       tree: null,
       warnings: [...warnings, `component ${componentName} has no statically readable return`],
       truncated: false,
+      data: [],
     }
   }
   const env: PropEnv = evaluateBody(model.cursor, model, shape, props)
   const counter = { nodes: 0, truncated: false }
   const value = readStaticValue(model.cursor, shape.bodyStart, shape.bodyEnd, model, env)
   const tree = normalizeTree(renderValue(value, model, env, counter, 0), warnings)
-  return { componentId: componentName, tree, warnings, truncated: counter.truncated }
+  return {
+    componentId: componentName,
+    tree,
+    warnings,
+    truncated: counter.truncated,
+    data: extractDataSources(model.cursor, shape),
+  }
+}
+
+/**
+ * Data a component reads from the Host: `const next = await call("status")` then
+ * `setStatus(next)`.
+ *
+ * The renderer cannot compute what the plugin computes, but it can show the values
+ * the plugin fetches. This pairing is what lets a client fetch the same method and
+ * feed the result back as the state value.
+ */
+export interface TranspiledDataSource {
+  /** State name the value lands in (`status` for `setStatus(next)`). */
+  readonly state: string
+  /** Host method the plugin calls (`status` → `<plugin>.status`). */
+  readonly method: string
+  /** Static payload argument, when the call passes an object literal. */
+  readonly payload?: Record<string, unknown>
+}
+
+/**
+ * Pair every `call("<method>")` in a component body with the state it feeds.
+ *
+ * Only literal methods are reported: a computed method name has no stable identity
+ * for the client to fetch.
+ *
+ * @param cursor - token stream of the bundle.
+ * @param shape - the component to scan.
+ * @returns one entry per discovered data source, in source order.
+ */
+export function extractDataSources(
+  cursor: Cursor,
+  shape: ComponentShape,
+): TranspiledDataSource[] {
+  const found: TranspiledDataSource[] = []
+  if (shape.bodyOpen < 0 || shape.bodyClose < 0) return found
+  const seen = new Set<string>()
+  for (let at = shape.bodyOpen; at < shape.bodyClose; at += 1) {
+    const token = cursor.tokens[at]
+    if (token === undefined || token.kind !== "ident" || token.value !== "call") continue
+    const paren = cursor.tokens[at + 1]
+    if (paren?.kind !== "punct" || paren.value !== "(") continue
+    const methodToken = cursor.tokens[at + 2]
+    if (methodToken?.kind !== "string") continue
+    const method = methodToken.value
+    // 只把「读」的方法当数据源：checkin、setAutoOn 这类调用有副作用，客户端不能把
+    // 它们当刷新数据反复打。
+    if (!isReadMethod(method)) continue
+    const close = cursor.matchDelimiter(at + 1)
+    const payload = readLiteralPayload(cursor, at + 2, close)
+    // The state this method feeds is the next `set<Name>(` in the same body:
+    // official components always follow the fetch with a setter immediately.
+    let state = ""
+    for (let scan = close + 1; scan < Math.min(close + 60, shape.bodyClose); scan += 1) {
+      const candidate = cursor.tokens[scan]
+      if (candidate === undefined || candidate.kind !== "ident") continue
+      const match = /^set([A-Z]\w*)$/.exec(candidate.value)
+      if (match === null) continue
+      const next = cursor.tokens[scan + 1]
+      if (next?.kind === "punct" && next.value === "(") {
+        const head = match[1]!
+        state = head.charAt(0).toLowerCase() + head.slice(1)
+        break
+      }
+    }
+    if (state === "" || seen.has(state)) continue
+    seen.add(state)
+    found.push(payload === undefined ? { state, method } : { state, method, payload })
+  }
+  return found
+}
+
+/**
+ * Read a call payload when it is an object literal.
+ *
+ * @param cursor - token stream.
+ * @param from - token index of the method string.
+ * @param close - index of the call's closing paren.
+ * @returns the static object, or undefined when the argument is computed.
+ */
+function readLiteralPayload(
+  cursor: Cursor,
+  from: number,
+  close: number,
+): Record<string, unknown> | undefined {
+  const open = cursor.tokens[from + 1]
+  if (open === undefined || open.kind !== 'punct' || open.value !== '{') return undefined
+  if (from + 2 >= close) return undefined
+  const value = readStaticValue(cursor, from + 1, close, undefined as never, undefined as never)
+  if (value.t !== 'value') return undefined
+  const raw = value.v
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  return raw as Record<string, unknown>
 }
 
 /**
@@ -2786,3 +2898,24 @@ function readHookInitial(
   if (value.t === 'text') return { value: value.text }
   return { value: false }
 }
+
+/**
+ * Whether a plugin method only reads.
+ *
+ * Data sources are fetched periodically and on every page open, so a method that
+ * mutates (check-in, set, connect, refresh) must never be treated as one.
+ *
+ * @param method - the literal method name from `call("<method>")`.
+ * @returns true when the name reads like a query.
+ */
+function isReadMethod(method: string): boolean {
+  return READ_METHOD_PATTERN.test(method) && !WRITE_METHOD_PATTERN.test(method)
+}
+
+/** Names that read: `status`, `auto-state`, `usage`, `accounts`, `getX`, … */
+const READ_METHOD_PATTERN =
+  /^(?:get|list|read|query|describe|fetch|status|state|info|me|usage|balance|accounts?|providers?|rows|inventory|models?|sessions?|files?|settings?)\b/i
+
+/** Names that mutate, even when they look like a query. */
+const WRITE_METHOD_PATTERN =
+  /^(?:set|add|remove|delete|create|update|login|logout|checkin|submit|start|stop|toggle|enable|disable|connect|disconnect|refresh|sync|save|upload|install|uninstall|run|exec|send|post|put|patch|cancel|resume|revoke|grant)/i

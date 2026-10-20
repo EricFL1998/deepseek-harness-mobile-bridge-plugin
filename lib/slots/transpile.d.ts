@@ -83,6 +83,13 @@ export interface TranspiledTree {
     readonly warnings: readonly string[];
     /** True when a budget stopped the walk; the tree is then a prefix. */
     readonly truncated: boolean;
+    /**
+     * Host data this component fetches (`call("<method>")` paired with a setter).
+     *
+     * A client fills these with the method's result before rendering, so the tree can
+     * show values the static pass cannot compute.
+     */
+    readonly data: readonly TranspiledDataSource[];
 }
 /** Ceilings applied to one parse / render. */
 export interface TranspileBudget {
@@ -114,6 +121,43 @@ interface Token {
  * can name a line.
  */
 export declare function tokenize(source: string): Token[];
+/** A forward-only walk over one token list with lookahead and matching helpers. */
+declare class Cursor {
+    readonly tokens: readonly Token[];
+    at: number;
+    constructor(tokens: readonly Token[]);
+    get done(): boolean;
+    peek(offset?: number): Token | undefined;
+    next(): Token | undefined;
+    /** Consume one token when it is the given punctuation. */
+    eat(punct: string): boolean;
+    /** Consume one token when it is the given identifier/keyword. */
+    eatWord(word: string): boolean;
+    /** Index of the token whose `start` is at-or-after the source offset. */
+    indexAtOffset(offset: number): number;
+    /** Index one past the punct-balanced region opened at `openIndex` (which holds `open`). */
+    matchDelimiter(openIndex: number): number;
+    /** Index one past the current statement: up to `;` or the closing `}` of a block. */
+    skipStatement(): number;
+}
+/** Function-shape the analyzer recovered for one component. */
+interface ComponentShape {
+    readonly name: string;
+    /** Binding identifiers the component's body reads (`{title:e}` → `e`). */
+    readonly paramProps: readonly string[];
+    /** Destructured *property* names in declaration order (`{title:e}` → `title`). */
+    readonly paramKeys: readonly string[];
+    /** True when the parameter is one plain identifier (`props.x` reads). */
+    readonly paramIsIdentifier: boolean;
+    /** Token index of the expression the component returns, or -1 when none. */
+    readonly bodyStart: number;
+    readonly bodyEnd: number;
+    /** Token index of the function body's `{`, or -1 for an expression-body arrow. */
+    readonly bodyOpen: number;
+    /** Exclusive end of the body block, or -1 for an expression-body arrow. */
+    readonly bodyClose: number;
+    readonly offset: number;
+}
 /**
  * Parse one compiled client bundle into registrations and component shapes.
  *
@@ -143,4 +187,31 @@ export declare function bundleSourceDigest(source: string): string;
  * @returns the tree, its warnings, and whether a budget stopped the walk.
  */
 export declare function buildComponentTree(source: string, componentName: string, props: Readonly<Record<string, unknown>>, budget?: TranspileBudget, localeTags?: readonly string[]): TranspiledTree;
+/**
+ * Data a component reads from the Host: `const next = await call("status")` then
+ * `setStatus(next)`.
+ *
+ * The renderer cannot compute what the plugin computes, but it can show the values
+ * the plugin fetches. This pairing is what lets a client fetch the same method and
+ * feed the result back as the state value.
+ */
+export interface TranspiledDataSource {
+    /** State name the value lands in (`status` for `setStatus(next)`). */
+    readonly state: string;
+    /** Host method the plugin calls (`status` → `<plugin>.status`). */
+    readonly method: string;
+    /** Static payload argument, when the call passes an object literal. */
+    readonly payload?: Record<string, unknown>;
+}
+/**
+ * Pair every `call("<method>")` in a component body with the state it feeds.
+ *
+ * Only literal methods are reported: a computed method name has no stable identity
+ * for the client to fetch.
+ *
+ * @param cursor - token stream of the bundle.
+ * @param shape - the component to scan.
+ * @returns one entry per discovered data source, in source order.
+ */
+export declare function extractDataSources(cursor: Cursor, shape: ComponentShape): TranspiledDataSource[];
 export {};

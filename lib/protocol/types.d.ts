@@ -308,3 +308,11 @@ export interface ComponentTreeData {
     /** Present when the plugin declares a native layout for this component. */
     readonly layout?: MobileLayoutData | null;
 }
+export interface ComponentTreeData {
+    /** Host data this component fetches; a client fills these before rendering. */
+    readonly data?: readonly {
+        readonly state: string;
+        readonly method: string;
+        readonly payload?: Record<string, unknown>;
+    }[];
+}

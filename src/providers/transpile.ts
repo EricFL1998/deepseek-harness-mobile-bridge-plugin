@@ -205,6 +205,7 @@ export function createTranspileProvider(options: TranspileOptions): Provider {
           warnings: built.warnings,
           truncated: built.truncated,
           layout: (await mobileLayout(packageName, member)) ?? null,
+          data: built.data,
         }
       },
 
