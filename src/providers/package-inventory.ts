@@ -88,12 +88,55 @@ function displayText(
 }
 
 /**
+ * 1500 ms snapshot cache with in-flight de-duplication.
+ *
+ * The App asks for one `meta-icon` per visible row, and each icon used to
+ * trigger a full `listBundles()` + `list()` scan. The TTL keeps a burst of icon
+ * requests on one snapshot while still letting a toggle take effect promptly.
+ */
+function cachedSnapshot<T>(load: () => Promise<T>): () => Promise<T> {
+  const ttlMs = 1500
+  let at = 0
+  let value: T | undefined
+  let inFlight: Promise<T> | undefined
+  return async () => {
+    if (value !== undefined && Date.now() - at < ttlMs) return value
+    if (inFlight !== undefined) return inFlight
+    const pending = load()
+      .then((next) => {
+        value = next
+        at = Date.now()
+        return next
+      })
+      .finally(() => {
+        inFlight = undefined
+      })
+    inFlight = pending
+    return pending
+  }
+}
+
+/**
  * Build the `package-inventory` provider.
  * @param options - service accessors.
  * @returns the provider to register.
  */
 export function createPackageInventoryProvider(options: PackageInventoryOptions): Provider {
   const managementAvailable = (): boolean => options.pluginManager() !== undefined
+  const loadBundles = cachedSnapshot(async () => {
+    const manager = options.pluginManager()
+    if (manager === undefined) {
+      throw new BridgeFailure('provider/unavailable', 'this Host composition has no plugin manager')
+    }
+    return manager.listBundles()
+  })
+  const loadInventory = cachedSnapshot(async () => {
+    const inventory = options.pluginInventory()
+    if (inventory === undefined) {
+      throw new BridgeFailure('provider/unavailable', 'this Host composition has no plugin inventory')
+    }
+    return inventory.list()
+  })
 
   return {
     id: 'package-inventory',
@@ -102,17 +145,18 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
     ops: {
       /** Every bundle the Host knows about, with its rows and `meta.icon`. */
       bundles: async (args): Promise<InventoryData> => {
-        const manager = options.pluginManager()
-        if (manager === undefined) {
+        if (options.pluginManager() === undefined) {
           throw new BridgeFailure('provider/unavailable', 'this Host composition has no plugin manager')
         }
         const localeTags = options.localeTags ?? []
         const name = optionalString(args, 'name')
-        const bundles = await manager.listBundles()
+        const bundles = await loadBundles()
         // A row's on/off state lives in the Loader inventory, not in the bundle
         // record: read it once and join by `entryId`, the same join the browser's
         // own Plugins page performs. A row whose entry is not inventoried is off.
-        const entries = await rowEntries(options.pluginInventory())
+        const entries = options.pluginInventory() === undefined
+          ? undefined
+          : new Map((await loadInventory()).entries.map(entry => [entry.entryId, entry]))
         const rows = (name === undefined ? bundles : bundles.filter(bundle => bundle.name === name))
           .map(bundle => projectBundle(bundle, localeTags, entries))
         return { bundles: rows, managementAvailable: true }
@@ -120,11 +164,10 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
 
       /** Every running Loader entry the Host reports. */
       rows: async (): Promise<InventoryData> => {
-        const inventory = options.pluginInventory()
-        if (inventory === undefined) {
+        if (options.pluginInventory() === undefined) {
           throw new BridgeFailure('provider/unavailable', 'this Host composition has no plugin inventory')
         }
-        const snapshot = await inventory.list()
+        const snapshot = await loadInventory()
         const rows: InventoryRow[] = snapshot.entries.map(entry => ({
           entryId: entry.entryId,
           moduleName: entry.moduleName,
@@ -138,14 +181,12 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
       /** One bundle's or row's `meta.icon` data URL, passed through untouched. */
       'meta-icon': async (args): Promise<{ name: string; icon: string | null }> => {
         const name = requiredString(args, 'name')
-        const manager = options.pluginManager()
-        if (manager !== undefined) {
-          const bundle = (await manager.listBundles()).find(item => item.name === name)
+        if (options.pluginManager() !== undefined) {
+          const bundle = (await loadBundles()).find(item => item.name === name)
           if (bundle !== undefined) return { name, icon: displayText(bundle.meta).icon ?? null }
         }
-        const inventory = options.pluginInventory()
-        if (inventory !== undefined) {
-          const snapshot = await inventory.list()
+        if (options.pluginInventory() !== undefined) {
+          const snapshot = await loadInventory()
           const row = snapshot.entries.find(entry => entry.entryId === name || entry.moduleName === name)
           if (row !== undefined) return { name, icon: displayText(row.meta).icon ?? null }
         }
@@ -153,20 +194,6 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
       },
     },
   }
-}
-
-/**
- * The Loader inventory keyed by entry id, or undefined when this composition has no
- * inventory service (then a row keeps whatever `enabled` the bundle record carried).
- * @param inventory - the plugin inventory face, when present.
- * @returns entry id → entry, or undefined.
- */
-async function rowEntries(
-  inventory: PluginInventoryFace | undefined,
-): Promise<ReadonlyMap<string, HostInventoryEntry> | undefined> {
-  if (inventory === undefined) return undefined
-  const snapshot = await inventory.list()
-  return new Map(snapshot.entries.map(entry => [entry.entryId, entry]))
 }
 
 /**

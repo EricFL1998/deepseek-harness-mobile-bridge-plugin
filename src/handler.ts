@@ -49,7 +49,11 @@ export interface BridgeReply {
  * @returns the handler both carriers call.
  */
 export function createBridgeHandler(options: BridgeHandlerOptions): (request: IncomingMessage) => Promise<BridgeReply> {
+  // Provider list, versions and warnings are fixed at assembly time; build the
+  // manifest once instead of re-projecting it on every poll.
+  let manifestCache: ManifestResponse | undefined
   const manifest = (): ManifestResponse => {
+    if (manifestCache !== undefined) return manifestCache
     const providers: ProviderManifestEntry[] = options.registry.list().map(provider => ({
       id: provider.id,
       version: provider.version,
@@ -57,13 +61,14 @@ export function createBridgeHandler(options: BridgeHandlerOptions): (request: In
       ...(provider.readOnly === true ? { readOnly: true as const } : {}),
       ...(provider.authorization === undefined ? {} : { authorization: provider.authorization }),
     }))
-    return {
+    manifestCache = {
       bridgeVersion: BRIDGE_VERSION,
       pluginVersion: options.pluginVersion(),
       dshVersion: options.dshVersion(),
       providers,
       ...(options.assemblyWarnings.length === 0 ? {} : { warnings: [...options.assemblyWarnings] }),
     }
+    return manifestCache
   }
 
   return async (request: IncomingMessage): Promise<BridgeReply> => {
