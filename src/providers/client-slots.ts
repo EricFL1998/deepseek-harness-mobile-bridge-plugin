@@ -21,6 +21,7 @@ import {
   extractStaticRegistrations, resolveStaticLabelFor, toSlotRegistration, type StaticRegistration,
 } from '../slots/static-slots.ts'
 import { bundleDictionaries } from '../slots/bundle-locale.ts'
+import { HIDDEN_BUNDLES } from './bundle-policy.ts'
 import { DEFAULT_RENDER_BUDGET, renderComponent, treeToSvg, type RenderBudget } from '../slots/render-tree.ts'
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -717,6 +718,9 @@ async function staticRegistrationsFor(
   const scanned = new Set<string>()
   for (const root of uniqueRoots(roots)) {
     for (const bundle of listClientBundles(root)) {
+      // 不在手机上出现的 bundle（例如只提供插槽示例的 cordis runner）也不贡献
+      // registrations，否则插件页会多出永远打不开的 “My entry”。
+      if (HIDDEN_BUNDLES.has(bundle.id)) continue
       const versionKey = `${bundle.id}@${bundle.rev}`
       // The same package version is the same bundle no matter which root reached it.
       if (scanned.has(versionKey)) continue
