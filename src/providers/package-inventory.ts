@@ -6,6 +6,7 @@
  */
 
 import { BridgeFailure, optionalLocale, optionalString, preferredLocaleTags, requiredString, type Provider } from '../protocol/provider.ts'
+import { bundlePolicy } from './bundle-policy.ts'
 import { firstString, localizedString } from '../protocol/json.ts'
 import type { InventoryBundle, InventoryBundleRow, InventoryData, InventoryRow } from '../protocol/types.ts'
 
@@ -222,8 +223,10 @@ function projectBundle(
       ...displayText(row.meta, localeTags),
     }
   })
+  const policy = bundlePolicy(bundle.name)
   return {
     name: bundle.name,
+    ...policy,
     official: bundle.official,
     optional: bundle.optional,
     removable: bundle.removable,

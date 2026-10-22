@@ -223,6 +223,18 @@ export interface InventoryBundle {
     readonly icon?: string;
     readonly rows: readonly InventoryBundleRow[];
     readonly errorCode?: string;
+    /** Profile root (patch layer) rather than a user-installable plugin. */
+    readonly profileRoot?: boolean;
+    /** Optional bundle pinned to the main Experimental group. */
+    readonly pinned?: boolean;
+    /** Display order inside its group, from the bridge policy. */
+    readonly order?: number;
+    /** Hide this bundle from the phone plugin list. */
+    readonly hidden?: boolean;
+    /** This bundle gates the Plugin Market tab. */
+    readonly market?: boolean;
+    /** The client must not disable or uninstall this bundle. */
+    readonly locked?: boolean;
 }
 /** One row a bundle's patch declares. */
 export interface InventoryBundleRow {
