@@ -117,7 +117,7 @@ export const Config: z<Config> = z.object({
     method: z.string().required(),
   })).default([]),
   maxRpcResultBytes: z.natural().min(1024).max(16 * 1024 * 1024).default(1024 * 1024),
-  rpcTimeoutMs: z.natural().min(100).max(600_000).default(30_000),
+  rpcTimeoutMs: z.natural().min(100).max(600_000).default(600_000),
   requireHostSession: z.boolean().default(true),
 })
 
