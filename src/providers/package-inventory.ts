@@ -5,7 +5,7 @@
  * so third-party bundle icons and titles stay fully backend-driven.
  */
 
-import { BridgeFailure, optionalString, requiredString, type Provider } from '../protocol/provider.ts'
+import { BridgeFailure, optionalLocale, optionalString, preferredLocaleTags, requiredString, type Provider } from '../protocol/provider.ts'
 import { firstString, localizedString } from '../protocol/json.ts'
 import type { InventoryBundle, InventoryBundleRow, InventoryData, InventoryRow } from '../protocol/types.ts'
 
@@ -148,7 +148,7 @@ export function createPackageInventoryProvider(options: PackageInventoryOptions)
         if (options.pluginManager() === undefined) {
           throw new BridgeFailure('provider/unavailable', 'this Host composition has no plugin manager')
         }
-        const localeTags = options.localeTags ?? []
+        const localeTags = preferredLocaleTags(optionalLocale(args), options.localeTags ?? [])
         const name = optionalString(args, 'name')
         const bundles = await loadBundles()
         // A row's on/off state lives in the Loader inventory, not in the bundle
