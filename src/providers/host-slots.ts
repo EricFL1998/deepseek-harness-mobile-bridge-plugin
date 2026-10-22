@@ -14,7 +14,7 @@
  * data to a screen without a second table of its own.
  */
 
-import type { Provider } from '../protocol/provider.ts'
+import { optionalLocale, preferredLocaleTags, type Provider } from '../protocol/provider.ts'
 import type { SlotSurface, SlotSurfaceData } from '../protocol/types.ts'
 import { localizedString } from '../protocol/json.ts'
 
@@ -97,9 +97,9 @@ export function createHostSlotsProvider(options: HostSlotsOptions): Provider {
     readOnly: true,
     ops: {
       /** Every plugin-declared surface this Host can enumerate. */
-      list: async (): Promise<SlotSurfaceData> => {
+      list: async (args): Promise<SlotSurfaceData> => {
         const settings = options.settings()
-        const localeTags = options.localeTags ?? []
+        const localeTags = preferredLocaleTags(optionalLocale(args), options.localeTags ?? [])
         if (settings === undefined) {
           // No settings service means no server-declared surfaces at all: report an
           // empty list rather than an error, because the rest of the bridge works.

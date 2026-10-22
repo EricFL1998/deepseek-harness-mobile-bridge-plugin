@@ -13,7 +13,7 @@
  * Each reported surface names the native place it belongs in, so the client maps
  * data to a screen without a second table of its own.
  */
-import type { Provider } from '../protocol/provider.ts';
+import { type Provider } from '../protocol/provider.ts';
 /** The slice of the Host's `settings` service this provider reads. */
 export interface SettingsFace {
     /** Every active namespace with a generated form, in registration order. */
