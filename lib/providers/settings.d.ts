@@ -25,6 +25,13 @@ export interface SettingsFieldNode {
     /** Whether the field may be edited. */
     readonly meta?: unknown;
 }
+/** One redacted secret position reported by the Host settings service. */
+export interface SettingsSecretSlot {
+    /** Path of the secret field inside the document value. */
+    readonly path: readonly string[];
+    /** Whether the user section currently stores a value for this slot. */
+    readonly set: boolean;
+}
 /** One settings document, structurally the Host's descriptor. */
 export interface SettingsDocument {
     readonly ns: string;
@@ -34,6 +41,8 @@ export interface SettingsDocument {
     readonly value?: unknown;
     readonly user?: unknown;
     readonly base?: unknown;
+    /** Secret positions (values are already stripped from `value`). */
+    readonly secrets?: readonly SettingsSecretSlot[];
 }
 /** The slice of the Host `settings` service this provider reads and writes. */
 export interface SettingsServiceFace {

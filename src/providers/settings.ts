@@ -28,6 +28,14 @@ export interface SettingsFieldNode {
   readonly meta?: unknown
 }
 
+/** One redacted secret position reported by the Host settings service. */
+export interface SettingsSecretSlot {
+  /** Path of the secret field inside the document value. */
+  readonly path: readonly string[]
+  /** Whether the user section currently stores a value for this slot. */
+  readonly set: boolean
+}
+
 /** One settings document, structurally the Host's descriptor. */
 export interface SettingsDocument {
   readonly ns: string
@@ -37,6 +45,8 @@ export interface SettingsDocument {
   readonly value?: unknown
   readonly user?: unknown
   readonly base?: unknown
+  /** Secret positions (values are already stripped from `value`). */
+  readonly secrets?: readonly SettingsSecretSlot[]
 }
 
 /** The slice of the Host `settings` service this provider reads and writes. */
@@ -83,6 +93,9 @@ export function createSettingsProvider(options: SettingsOptions): Provider {
           applies: document.applies,
           schema: document.schema ?? {},
           value: document.value ?? {},
+          // Secret values never ride the response; the client only needs the
+          // path plus whether a value is stored, so the field can show a mask.
+          secrets: document.secrets ?? [],
         }
       },
       /** Merge edited fields into the document, rejecting a stale revision. */
